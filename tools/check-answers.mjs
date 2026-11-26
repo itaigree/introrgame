@@ -2,7 +2,8 @@
 /*
  * Checks the question bank against real R.
  *
- *   node tools/check-answers.mjs
+ *   node tools/check-answers.mjs                 (checks js/questions.js)
+ *   node tools/check-answers.mjs other-file.js   (checks another file in the same format)
  *
  * Needs Node 18+ and R (Rscript on the PATH, or set RSCRIPT=/path/to/Rscript).
  *
@@ -12,6 +13,10 @@
  *   - checks that no wrong option also matches what R prints
  *   - reports any R warning or message (students would see it too)
  *   - checks that the last `output` step of the explanation is exactly what R prints
+ *
+ * If the right answer is an error, write the option with the word Error, for example 'שגיאה (Error)':
+ * the check then passes when R stops with an error. A question with `manual: true` is run but not
+ * compared (use it only when the right option is Hebrew text that can't be compared to R's output).
  */
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -23,9 +28,9 @@ import vm from 'node:vm';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const sandbox = { window: {} };
 vm.createContext(sandbox);
-for (const file of ['js/config.js', 'js/questions.js']) {
-  vm.runInContext(readFileSync(join(root, file), 'utf8'), sandbox, { filename: file });
-}
+const questionsFile = process.argv[2] || join(root, 'js/questions.js');
+vm.runInContext(readFileSync(join(root, 'js/config.js'), 'utf8'), sandbox, { filename: 'js/config.js' });
+vm.runInContext(readFileSync(questionsFile, 'utf8'), sandbox, { filename: questionsFile });
 const config = sandbox.window.GAME_CONFIG;
 const questions = sandbox.window.GAME_QUESTIONS;
 const rscript = process.env.RSCRIPT || 'Rscript';
@@ -67,6 +72,7 @@ try {
     if (!Array.isArray(q.options) || q.options.length !== 4) report(q, 'needs exactly 4 options');
     if (!Number.isInteger(q.answer) || q.answer < 0 || q.answer >= (q.options || []).length) report(q, 'answer is not a valid option index');
     if (!q.hint) report(q, 'missing hint');
+    if (q.prompt !== undefined && (typeof q.prompt !== 'string' || !q.prompt.trim())) report(q, 'prompt must be a non-empty string');
     if (!Array.isArray(q.explanation) || q.explanation.length === 0) report(q, 'missing explanation steps');
     (q.options || []).forEach((_, i) => {
       if (i !== q.answer && !(q.whyWrong && q.whyWrong[i])) report(q, `missing whyWrong for option ${'abcd'[i]}`);
@@ -97,7 +103,17 @@ try {
     writeFileSync(file, q.code + '\n');
     const res = spawnSync(rscript, ['--vanilla', file], { encoding: 'utf8', env: rEnv });
     if (res.error) { report(q, `could not run R: ${res.error.message}`); continue; }
+    const expectsError = /error/i.test(q.options[q.answer]);
+    if (expectsError) {
+      if (res.status === 0) report(q, `the right option is an error, but R ran without one and printed:\n${res.stdout}`);
+      console.log(`${res.status !== 0 ? 'ok  ' : 'FAIL'} ${q.id}: (error) ${res.stderr.trim().split('\n')[0]}`);
+      continue;
+    }
     if (res.status !== 0) { report(q, `R error:\n${res.stderr}`); continue; }
+    if (q.manual) {
+      console.log(`man  ${q.id}: R printed: ${normalize(res.stdout)}  |  right option: ${q.options[q.answer]}`);
+      continue;
+    }
     if (res.stderr.trim()) report(q, `R also printed a warning or message (students see it too):\n${res.stderr.trim()}`);
     const out = res.stdout;
 
