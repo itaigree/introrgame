@@ -4,8 +4,8 @@ A phone-friendly practice game for the first-semester "Intro to R" course. Every
 the students pick what R prints, just like the exam. The story is only flavour: a mysterious virus is spreading, and
 every right answer brings the cure closer.
 
-The interface is in Hebrew. The 5 questions in `js/questions.js` are **placeholders**, one per lab station, from easy to
-hard. Replace them with the real questions.
+The interface is in Hebrew. There are 7 lab stations, one per course week (1–7), and each has easy, medium and hard
+questions written from the course material in the exam's style. None of the exam's own questions are used.
 
 ## Play it
 
@@ -18,16 +18,20 @@ Progress is saved in each student's own browser (nothing is sent anywhere).
 
 ## How the game works
 
-- **Lab stations** (one per topic) open one after the other. Each run starts with 3 samples (lives).
-- A wrong answer, or running out of time, costs a sample and shows a step-by-step explanation of what R did,
-  plus why that specific wrong answer is tempting.
+- **Lab stations** (one per week) open one after the other. Each run draws 9 of the station's questions (3 easy,
+  3 medium, 3 hard), the ones the student hasn't answered right yet first, so playing a station again brings new
+  questions. A run starts with 3 samples (lives).
+- A wrong answer costs a sample and shows a step-by-step explanation of what R did, plus why that specific wrong
+  answer is tempting.
 - Questions the students got wrong go to **"דגימות מזוהמות"** (review mode, no lives and no timer) until they answer them right.
-- **"מכינים את התרופה"** is a timed mock exam with random questions from all stations and no feedback until the end,
-  like the real exam.
+- **"מכינים את התרופה"** is a mock exam with questions from all stations, easy to hard within each topic, and no
+  feedback until the end, like the real exam.
+- **"מצב זמן"** (time mode) is off by default. Students can turn it on in the menu (⋯): each question then gets a
+  countdown and the mock exam gets a clock.
 - **"נסו ב-R"** runs the question's code in a real R inside the browser (webR). If it can't load, students can copy the
   code and paste it into RStudio.
 
-## Adding the real questions
+## Adding or changing questions
 
 1. Edit `js/questions.js`. The comment at the top of the file explains every field. In short, each question has:
    the R `code`, 4 `options` written like the exam, the `answer` (0 = a … 3 = d), a `hint`, an `explanation`
@@ -42,7 +46,7 @@ Progress is saved in each student's own browser (nothing is sent anywhere).
 
    This needs [Node.js](https://nodejs.org) and R. It runs every question's code in R and reports any mismatch.
 
-Stations, lives, timers and the mock exam size are set in `js/config.js`. A station with no questions is shown as
+Stations, lives, how many questions a run draws, time mode and the mock exam size are set in `js/config.js`. A station with no questions is shown as
 "בקרוב" and doesn't block the next one.
 
 ## Files

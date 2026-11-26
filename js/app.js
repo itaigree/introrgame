@@ -63,8 +63,10 @@
    * ================================================================ */
 
   const ICONS = {
+    clipboard: '<path d="M9 4H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2"/><rect x="9" y="2.5" width="6" height="3.5" rx="1"/><path d="M9 11.5h6M9 15.5h4"/>',
     tube: '<path d="M8 3h8"/><path d="M9.5 3v14.5a2.5 2.5 0 0 0 5 0V3"/><path d="M9.5 12h5"/>',
     microscope: '<path d="M5 21h14"/><path d="M7 18h7"/><path d="M15 18a5 5 0 0 0 1-9"/><path d="m9 3 3-1.5 4 7.5-3 1.5z"/><path d="M11.5 11.5 10 14h4"/>',
+    robot: '<rect x="4.5" y="8" width="15" height="12" rx="3"/><path d="M12 8V5"/><circle cx="12" cy="3.6" r="1.2"/><path d="M9.5 12.5v1.5M14.5 12.5v1.5M10 17h4M2.5 12.5v3M21.5 12.5v3"/>',
     machine: '<rect x="3" y="9" width="18" height="11" rx="2"/><path d="M6 9V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v3"/><path d="M7 14.5h4M15 14.5h2"/>',
     table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/>',
     loop: '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/>',
@@ -112,13 +114,14 @@
   function lives(left, total, dark) {
     let html = '';
     for (let i = 0; i < total; i++) html += tube(i < left, dark);
-    return `<div class="lives" role="img" aria-label="נשארו ${left} מתוך ${total} דגימות">${html}</div>`;
+    return `<div class="lives" role="img" aria-label="${left === 1 ? 'נשארה' : 'נשארו'} ${left} מתוך ${total} דגימות">${html}</div>`;
   }
 
   /* ================================================================
    * Config and question bank (validated, never trusted blindly)
    * ================================================================ */
 
+  const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
   const RAW = window.GAME_CONFIG || {};
   const rawTimer = RAW.timer || {};
   const rawExam = RAW.exam || {};
@@ -136,11 +139,18 @@
     return [Math.round(Math.min(a, b)), Math.round(Math.max(a, b))];
   }
 
+  // How many questions of each level a station run draws (missing = all of them).
+  function perLevel(v) {
+    const raw = isObj(v) ? v : {};
+    return { 1: posInt(raw[1], Infinity), 2: posInt(raw[2], Infinity), 3: posInt(raw[3], Infinity) };
+  }
+
   const CFG = {
     lockStations: RAW.lockStations !== false,
     livesPerRun: posInt(RAW.livesPerRun, 3),
-    timerEnabled: rawTimer.enabled !== false,
+    timeModeDefault: rawTimer.defaultOn === true,
     secondsByLevel: rawTimer.secondsByLevel || {},
+    perRun: perLevel(RAW.questionsPerRun),
     examMax: posInt(rawExam.maxQuestions, 20),
     examSecondsPerQuestion: posInt(rawExam.secondsPerQuestion, 90),
     startCases: Number(rawOutbreak.startCases) >= 0 ? Math.round(Number(rawOutbreak.startCases)) : 1200,
@@ -160,7 +170,7 @@
       name: String(s.name || s.id),
       topic: String(s.topic || ''),
       topicCode: String(s.topicCode || ''),
-      icon: ICONS[s.icon] ? s.icon : 'tube'
+      icon: ICONS[s.icon] ? s.icon : 'flask' // unknown icon names get the lab flask
     });
   });
 
@@ -176,6 +186,7 @@
     return '';
   }
 
+  const DEFAULT_PROMPT = 'מה יהיה הפלט?';
   const QUESTIONS = [];
   const Q_BY_ID = new Map();
   (Array.isArray(window.GAME_QUESTIONS) ? window.GAME_QUESTIONS : []).forEach((q, i) => {
@@ -188,6 +199,7 @@
       id: q.id,
       station: q.station,
       level: q.level,
+      prompt: typeof q.prompt === 'string' && q.prompt.trim() ? q.prompt.trim() : DEFAULT_PROMPT,
       context: typeof q.context === 'string' ? q.context : '',
       code: q.code.replace(/\s+$/, ''),
       options: q.options.map((o) => String(o)),
@@ -211,7 +223,6 @@
    * ================================================================ */
 
   const STORAGE_KEY = 'outbreak-r-v1';
-  const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
   const count = (v, fallback) => (Number.isFinite(v) && v >= 0 ? Math.floor(v) : fallback);
 
   function defaultState() {
@@ -228,7 +239,8 @@
       bestStreak: 0,
       examBest: null,
       victoryShown: false,
-      sound: true
+      sound: true,
+      timeMode: CFG.timeModeDefault // "מצב זמן": question countdowns and the exam clock
     };
   }
 
@@ -270,6 +282,7 @@
     s.examBest = Number.isFinite(saved.examBest) ? clamp(Math.round(saved.examBest), 0, 100) : null;
     s.victoryShown = saved.victoryShown === true;
     s.sound = saved.sound !== false;
+    if (typeof saved.timeMode === 'boolean') s.timeMode = saved.timeMode;
     return s;
   }
 
@@ -298,7 +311,13 @@
 
   const stationQuestions = (sid) => STATION_QS[sid] || [];
   const masteredIn = (list) => list.filter((q) => state.mastered[q.id]).length;
-  const curePct = () => (QUESTIONS.length ? Math.round((100 * masteredIn(QUESTIONS)) / QUESTIONS.length) : 0);
+  const allMastered = () => QUESTIONS.length > 0 && masteredIn(QUESTIONS) === QUESTIONS.length;
+  // Rounded for display, but never 100% while a question is still not mastered (199/200 would round up).
+  function curePct() {
+    if (!QUESTIONS.length) return 0;
+    const pct = Math.round((100 * masteredIn(QUESTIONS)) / QUESTIONS.length);
+    return pct === 100 && !allMastered() ? 99 : pct;
+  }
   const playableStations = () => STATIONS.filter((s) => stationQuestions(s.id).length > 0);
 
   // 'empty' | 'cleared' | 'locked' | 'open'
@@ -437,6 +456,12 @@
   let screen = '';
   let run = null; // the active station run / review / exam
 
+  // Double-tap guard: a new screen (or sheet) often puts its main button exactly where the finger
+  // just was (the sticky bottom bar), so clicks right after a render are ignored. See the click handlers.
+  const TAP_GUARD_MS = 400;
+  let screenShownAt = -Infinity; // #app re-rendered, or a sheet over it closed
+  let sheetShownAt = -Infinity; // a sheet opened, or its content changed in place
+
   function show(name, html, focus) {
     if (sheet) closeSheet();
     toastEl.classList.remove('is-on');
@@ -444,6 +469,7 @@
     screen = name;
     app.dataset.screen = name;
     app.innerHTML = html;
+    screenShownAt = performance.now();
     window.scrollTo(0, 0);
     if (name !== 'home') guardHistory();
     if (focus !== false) {
@@ -497,7 +523,7 @@
   function goHome(focus) {
     if (run && run.timer) run.timer.stop();
     run = null;
-    if (QUESTIONS.length && curePct() === 100 && !state.victoryShown) {
+    if (allMastered() && !state.victoryShown) {
       state.victoryShown = true;
       save();
       renderVictory(focus);
@@ -603,28 +629,93 @@
     return `<pre class="code" dir="ltr" tabindex="0" aria-label="קוד R"><code>${highlight(code)}</code></pre>`;
   }
 
+  // The start of the code's last top-level statement (a block like `if (...) {` gets " …").
   function lastCodeLine(q) {
-    const lines = q.code.split('\n').map((l) => l.trim()).filter(Boolean);
-    return lines[lines.length - 1] || '';
+    const lines = q.code.split('\n').map((l) => l.trim());
+    const prompts = consolePrompts(q.code);
+    let tail = false;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i] || lines[i].startsWith('#')) continue;
+      if (prompts[i] === '>') return lines[i] + (tail ? ' …' : '');
+      tail = true;
+    }
+    return lines.filter(Boolean).pop() || '';
   }
 
-  // What R prints: the last output step of the explanation, else the right option.
+  // Options with Hebrew letters ("שגיאה (Error), כי ...") are sentences: shown right to left as
+  // formatted text (`code` stays LTR). All other options are R values: LTR monospace.
+  const isTextOption = (opt) => /[\u0590-\u05FF]/.test(opt);
+  const optionDir = (opt) => (isTextOption(opt) ? 'rtl' : 'ltr');
+  const optionMarkup = (opt) => (isTextOption(opt) ? fmt(opt) : esc(opt));
+
+  // What R prints: the last output step of the explanation, else the right option
+  // ('' when that option is a Hebrew sentence, which R never prints).
   function printedOutput(q) {
     const outputs = q.explanation.filter((s) => typeof s.output === 'string');
-    return outputs.length ? outputs[outputs.length - 1].output : `[1] ${q.options[q.answer]}`;
+    if (outputs.length) return outputs[outputs.length - 1].output;
+    const right = q.options[q.answer];
+    return isTextOption(right) ? '' : `[1] ${right}`;
+  }
+
+  const isErrorOutput = (output) => /^\s*Error\b/.test(output);
+
+  // The prompt R shows before each code line: '+' only while the expression above is still open
+  // (an unclosed bracket or string, or a line that ends with an operator or comma), else '>'.
+  function consolePrompts(code) {
+    let depth = 0;
+    let str = null;
+    let cont = false;
+    return code.split('\n').map((line) => {
+      const prompt = depth > 0 || str || cont ? '+' : '>';
+      let bare = '';
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (str) {
+          if (ch === '\\') i++;
+          else if (ch === str) str = null;
+          continue;
+        }
+        if (ch === '#') break;
+        if (ch === '"' || ch === "'" || ch === '`') str = ch;
+        else if ('([{'.includes(ch)) depth++;
+        else if (')]}'.includes(ch)) depth = Math.max(0, depth - 1);
+        bare += ch;
+      }
+      // Still open: a trailing operator or comma, `else`, or an `if (...)`/`for (...)`/`while (...)` header with no body yet.
+      cont = /([-+*/^=&|~,<>!]|%[^%\s]*%|\belse)\s*$/.test(bare) || (depth === 0 && bareHeader(bare));
+      return prompt;
+    });
+  }
+
+  // `if (...)`, `for (...)` or `while (...)` with nothing after the closing bracket.
+  function bareHeader(line) {
+    const m = /^\s*(?:\}\s*)?(?:else\s+)?(?:if|for|while)\s*\(/.exec(line);
+    if (!m) return false;
+    let depth = 1;
+    let i = m[0].length;
+    for (; i < line.length && depth > 0; i++) {
+      if (line[i] === '(') depth++;
+      else if (line[i] === ')') depth--;
+    }
+    return depth === 0 && !line.slice(i).trim();
   }
 
   const hasVector = (s) => !!(s.vector && Array.isArray(s.vector.values));
   const hasTable = (s) => !!(s.table && Array.isArray(s.table.columns) && Array.isArray(s.table.rows));
 
   const MARK_WORDS = { on: 'מסומן', off: 'לא נבחר', drop: 'נמחק' };
+  // Vector marks come from the data, so only these known values may become a class name.
+  const markOf = (m) => (m === 'on' || m === 'off' || m === 'drop' ? m : 'plain');
 
   function vectorViz(v, dark) {
     const marks = Array.isArray(v.marks) ? v.marks : [];
     const labels = Array.isArray(v.labels) ? v.labels : [];
-    const described = v.values.map((val, i) => `${val}${MARK_WORDS[marks[i]] ? ` (${MARK_WORDS[marks[i]]})` : ''}${labels[i] ? `: ${labels[i]}` : ''}`);
+    const described = v.values.map((val, i) => {
+      const mark = markOf(marks[i]);
+      return `${val}${mark !== 'plain' ? ` (${MARK_WORDS[mark]})` : ''}${labels[i] ? `: ${labels[i]}` : ''}`;
+    });
     const cols = v.values.map((val, i) => {
-      const mark = ['on', 'off', 'drop'].includes(marks[i]) ? marks[i] : 'plain';
+      const mark = markOf(marks[i]);
       return '<span class="vcol">' +
         (v.showIndex ? `<span class="vidx">${i + 1}</span>` : '') +
         `<span class="vcell m-${mark}">${esc(val)}</span>` +
@@ -647,7 +738,7 @@
   }
 
   function consoleChip(output) {
-    return `<code class="console-chip" dir="ltr">${esc(output)}</code>`;
+    return `<code class="console-chip${isErrorOutput(output) ? ' is-err' : ''}" dir="ltr">${esc(output)}</code>`;
   }
 
   function stepVisual(step, dark) {
@@ -677,7 +768,7 @@
       if (i !== skip) {
         if (hasVector(s)) {
           const marks = Array.isArray(s.vector.marks) ? s.vector.marks : [];
-          extra = `<bdi dir="ltr" class="inline-vec">${s.vector.values.map((v, j) => `<span class="iv m-${marks[j] || 'plain'}">${esc(v)}</span>`).join(' ')}</bdi>`;
+          extra = `<bdi dir="ltr" class="inline-vec">${s.vector.values.map((v, j) => `<span class="iv m-${markOf(marks[j])}">${esc(v)}</span>`).join(' ')}</bdi>`;
         } else if (hasTable(s)) {
           extra = tableViz(s.table, false);
         } else if (typeof s.output === 'string') {
@@ -715,6 +806,17 @@
       </div>`;
   }
 
+  // The exam without time mode: a calm strip with how many questions are answered, no clock.
+  function progressStrip(answered, total) {
+    return `<div class="strip strip--calm" id="strip">
+        <span class="strip-icon">${icon('flask', 24)}</span>
+        <div class="strip-mid">
+          <span class="strip-text" id="strip-text">עניתם על ${answered} מתוך ${total}</span>
+          <span class="bar"><span class="bar-fill" id="answered-bar" style="width:${(100 * answered) / total}%"></span></span>
+        </div>
+      </div>`;
+  }
+
   function updateStrip(secondsLeft) {
     if (!run || !run.timer) return;
     const bar = document.getElementById('timer-bar');
@@ -733,9 +835,9 @@
 
   function optionsList(q, selected) {
     return `<ul class="options" role="list">${q.options.map((opt, i) => `<li>
-        <button type="button" class="option${opt.length > 18 ? ' option--long' : ''}" data-action="pick" data-index="${i}" aria-pressed="${selected === i}">
+        <button type="button" class="option${isTextOption(opt) ? ' option--text' : opt.length > 18 ? ' option--long' : ''}" data-action="pick" data-index="${i}" aria-pressed="${selected === i}">
           <span class="option-letter">${LETTERS[i]}</span>
-          <span class="option-value" dir="ltr">${esc(opt)}</span>
+          <span class="option-value" dir="${optionDir(opt)}">${optionMarkup(opt)}</span>
           <svg class="option-check" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><path d="m7.5 12.5 3 3 6-6.5" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
       </li>`).join('')}</ul>`;
@@ -747,7 +849,7 @@
           <span class="qcard-log">${esc(logLabel)}</span>
           <span class="qcard-chips">${chips}</span>
         </div>
-        <h1 class="qtitle">מה יהיה הפלט?</h1>
+        <h1 class="qtitle${q.prompt.length > 20 ? ' qtitle--long' : ''}">${fmt(q.prompt)}</h1>
         ${q.context ? `<p class="qcontext">${fmt(q.context)}</p>` : ''}
         ${codeBlock(q.code)}
       </section>`;
@@ -762,23 +864,28 @@
   }
 
   function sizeClass(text) {
+    if (isTextOption(text)) return ' is-text';
     return text.length > 16 ? ' is-xlong' : text.length > 9 ? ' is-long' : '';
   }
 
-  // "Your answer" vs "right answer" boxes.
+  function cmpValue(q, index, struck) {
+    const opt = q.options[index];
+    return `<span class="cmp-value${struck ? ' is-struck' : ''}${sizeClass(opt)}" dir="${optionDir(opt)}"><span class="sr-only">${LETTERS[index]}: </span>${optionMarkup(opt)}</span>`;
+  }
+
+  // "Your answer" vs "right answer" boxes (stacked when an answer is a sentence or long).
   function compareBoxes(q, chosen) {
     const right = q.options[q.answer];
-    const mine = chosen == null
-      ? '<span class="cmp-none">לא נבחרה תשובה</span>'
-      : `<span class="cmp-value is-struck${sizeClass(q.options[chosen])}" dir="ltr"><span class="sr-only">${LETTERS[chosen]}: </span>${esc(q.options[chosen])}</span>`;
-    return `<div class="compare">
+    const mine = chosen == null ? '<span class="cmp-none">לא נבחרה תשובה</span>' : cmpValue(q, chosen, true);
+    const wide = [right, chosen == null ? '' : q.options[chosen]].some((o) => isTextOption(o) || o.length > 22);
+    return `<div class="compare${wide ? ' compare--stack' : ''}">
         <div class="cmp cmp--wrong">
           <span class="cmp-label">${icon('close', 13, 3)}התשובה שלכם</span>
           ${mine}
         </div>
         <div class="cmp cmp--right">
           <span class="cmp-label">${icon('check', 13, 3)}התשובה הנכונה</span>
-          <span class="cmp-value${sizeClass(right)}" dir="ltr"><span class="sr-only">${LETTERS[q.answer]}: </span>${esc(right)}</span>
+          ${cmpValue(q, q.answer, false)}
         </div>
       </div>`;
   }
@@ -792,6 +899,11 @@
       </section>`;
   }
 
+  // An option inside a Hebrew sentence: an isolated LTR value, or RTL text for a Hebrew option.
+  function answerInline(opt) {
+    return `<bdi dir="${optionDir(opt)}" class="${isTextOption(opt) ? 'opt-text' : 'mono'}">${optionMarkup(opt)}</bdi>`;
+  }
+
   function resultRow(r, i) {
     const q = r.q;
     const status = r.right
@@ -802,7 +914,7 @@
         <span class="rr-main">
           ${q.context ? `<span class="rr-context">${fmt(q.context.replace(/[:：]\s*$/, ''))}</span>` : ''}
           <code class="rr-code" dir="ltr">${esc(lastCodeLine(q))}</code>
-          <span class="rr-answer">התשובה הנכונה: <bdi dir="ltr" class="mono">${esc(q.options[q.answer])}</bdi></span>
+          <span class="rr-answer">התשובה הנכונה: ${answerInline(q.options[q.answer])}</span>
         </span>
         <span class="rr-go">${icon('chevronFwd', 18, 2.2)}</span>
       </button></li>`;
@@ -885,18 +997,26 @@
           <span class="st-end">${icon('lock', 18)}<span class="sr-only">נעולה</span></span>
         </button></li>`;
     }
+    // A cleared station keeps its count until every question in it was answered right:
+    // a run only draws some of the station's questions, so there is more to practise.
+    const count = `<span class="st-count" dir="ltr"><span class="sr-only">נפתרו </span>${done}/${qs.length}</span>`;
     const end = status === 'cleared'
-      ? `<span class="st-end is-cleared">${icon('checkCircle', 20, 2.2)}<span class="sr-only">הושלמה</span></span>`
-      : `<span class="st-end"><span class="st-count" dir="ltr"><span class="sr-only">נפתרו </span>${done}/${qs.length}</span>${icon('chevronFwd', 18, 2.4)}</span>`;
+      ? `<span class="st-end is-cleared">${done < qs.length ? count : ''}${icon('checkCircle', 20, 2.2)}<span class="sr-only">הושלמה</span></span>`
+      : `<span class="st-end">${count}${icon('chevronFwd', 18, 2.4)}</span>`;
     return `<li><button type="button" class="station${isCurrent ? ' is-current' : ''}${status === 'cleared' ? ' is-cleared' : ''}" data-action="station" data-id="${esc(st.id)}">
         <span class="st-icon">${icon(st.icon, 20)}</span>${text}${end}
       </button></li>`;
   }
 
+  function examSub(n) {
+    if (!n) return 'מבחן דמה · בקרוב';
+    return `מבחן דמה · ${n} שאלות${state.timeMode ? ' · על זמן' : ''}`;
+  }
+
   function examRow() {
     const unlocked = examUnlocked();
     const n = examSize();
-    const sub = n ? `מבחן דמה · ${n} שאלות · על זמן` : 'מבחן דמה · בקרוב';
+    const sub = examSub(n);
     const end = unlocked
       ? (state.examBest != null
         ? `<span class="st-end"><span class="st-best" dir="ltr"><span class="sr-only">השיא שלכם </span>${state.examBest}%</span>${icon('chevronFwd', 18, 2.4)}</span>`
@@ -1002,8 +1122,16 @@
     const st = STATIONS.find((s) => s.id === id);
     const qs = st ? stationQuestions(id) : [];
     if (!qs.length) return;
-    run = { mode: 'station', station: st, questions: qs.slice(), index: 0, lives: CFG.livesPerRun, results: [] };
+    run = { mode: 'station', station: st, questions: runQuestions(qs), index: 0, lives: CFG.livesPerRun, results: [] };
     showQuestion();
+  }
+
+  // A station run: per level (easy → hard) up to questionsPerRun questions, the ones not yet
+  // answered right first, in random order, so a replay is not the same run again.
+  function runQuestions(qs) {
+    return [1, 2, 3].flatMap((level) => shuffle(qs.filter((q) => q.level === level))
+      .sort((a, b) => Number(!!state.mastered[a.id]) - Number(!!state.mastered[b.id]))
+      .slice(0, CFG.perRun[level]));
   }
 
   function startReview() {
@@ -1027,7 +1155,7 @@
     run.hintUsed = false;
     run.warned = false;
     run.timer = null;
-    const useTimer = run.mode === 'station' && CFG.timerEnabled;
+    const useTimer = run.mode === 'station' && state.timeMode;
     const chips = levelChip(q.level) + (state.streak >= 2 ? `<span class="chip chip--streak">${BOLT}${state.streak} ברצף</span>` : '');
     const logLabel = run.mode === 'review' ? `ניקוי דגימות · ${pad2(run.index + 1)}` : `יומן מעבדה · ניסוי ${pad2(run.index + 1)}`;
     const closeLabel = run.mode === 'review' ? 'חזרה למעבדה' : 'יציאה מהתחנה';
@@ -1073,7 +1201,7 @@
     const rec = recordAnswer(q, right, true);
     if (run.mode === 'station' && !right) run.lives--;
     if (run.mode === 'review' && right) removeMistake(q.id);
-    run.results.push({ q, chosen, right, timeout: !!timeout, hint: run.hintUsed });
+    run.results.push({ q, chosen, right });
     run.feedback = Object.assign({ q, chosen, right, timeout: !!timeout, hint: run.hintUsed }, rec);
     if (right) {
       renderSuccess();
@@ -1085,8 +1213,14 @@
       play('fail');
       announce(timeout
         ? `הזמן נגמר. התשובה הנכונה: ${LETTERS[q.answer]}`
-        : `טעות. התשובה הנכונה: ${LETTERS[q.answer]}${run.mode === 'station' ? `. נשארו ${run.lives} דגימות` : ''}`);
+        : `טעות. התשובה הנכונה: ${LETTERS[q.answer]}${run.mode === 'station' ? `. ${samplesLeftText(run.lives)}` : ''}`);
     }
+  }
+
+  function samplesLeftText(n) {
+    if (n === 1) return 'נשארה דגימה אחת';
+    if (n === 0) return 'לא נשארו דגימות';
+    return `נשארו ${n} דגימות`;
   }
 
   function isRunOver() {
@@ -1098,15 +1232,24 @@
     return `<button type="button" class="btn btn--primary btn--grow" data-action="next">${label}${icon('arrowFwd', 20, 2.4)}</button>`;
   }
 
+  function consoleLines(code) {
+    const prompts = consolePrompts(code);
+    return code.split('\n').map((l, i) => `<span class="rc-prompt">${esc(prompts[i])}</span> ${highlight(l)}`).join('\n');
+  }
+
   function renderSuccess() {
     const f = run.feedback;
     const q = f.q;
     const heroIndex = q.explanation.findIndex((s) => hasVector(s) || hasTable(s));
     const output = printedOutput(q);
+    const right = q.options[q.answer];
+    const caption = !output
+      ? `<p class="hero-caption">התשובה הנכונה: <span class="hero-answer">${answerInline(right)}</span></p>`
+      : `<p class="hero-caption">${isErrorOutput(output) ? 'ולכן R עוצר עם שגיאה:' : 'ולכן הפלט הוא'} ${consoleChip(output)}</p>`;
+    const consoleOut = output ? `\n<span class="rc-out${isErrorOutput(output) ? ' is-err' : ''}">${esc(output)}</span>` : '';
     const heroVisual = heroIndex >= 0
-      ? `<div class="hero-visual">${stepVisual(q.explanation[heroIndex], true)}</div>
-         <p class="hero-caption">ולכן הפלט הוא ${consoleChip(output)}</p>`
-      : `<pre class="rconsole" dir="ltr" aria-label="קונסולת R">${q.code.split('\n').map((l, i) => `<span class="rc-prompt">${i ? '+' : '&gt;'}</span> ${highlight(l)}`).join('\n')}\n<span class="rc-out">${esc(output)}</span></pre>`;
+      ? `<div class="hero-visual">${stepVisual(q.explanation[heroIndex], true)}</div>${caption}`
+      : `<pre class="rconsole" dir="ltr" aria-label="קונסולת R">${consoleLines(q.code)}${consoleOut}</pre>${output ? '' : caption}`;
 
     const gained = f.cureAfter - f.cureBefore;
     const slowed = -f.cases;
@@ -1198,6 +1341,8 @@
     run.ended = true;
     if (run.mode === 'review') return renderReviewSummary();
     if (run.lives > 0) {
+      // Which stations were locked before this clear, so the summary can say whether one just opened.
+      run.lockedBefore = STATIONS.map((s, i) => stationStatus(i) === 'locked');
       state.stationsCleared[run.station.id] = true;
       save();
       renderStationSummary();
@@ -1233,9 +1378,9 @@
           </div>
           <div class="hero-stats">
             <div><span class="hs-num" dir="ltr">${right}/${run.results.length}</span><span class="hs-label">תשובות נכונות</span></div>
-            <div>${lives(run.lives, CFG.livesPerRun, true)}<span class="hs-label">${run.lives === 1 ? 'נשארה דגימה אחת' : `נשארו ${run.lives} דגימות`}</span></div>
+            <div>${lives(run.lives, CFG.livesPerRun, true)}<span class="hs-label">${samplesLeftText(run.lives)}</span></div>
           </div>
-          ${next ? `<p class="hero-caption">${stationStatus(STATIONS.indexOf(next)) === 'cleared' ? 'התחנה הבאה' : 'נפתחה תחנה חדשה'}: <b>${esc(next.name)}</b></p>` : ''}
+          ${next ? `<p class="hero-caption">${run.lockedBefore[STATIONS.indexOf(next)] ? 'נפתחה תחנה חדשה' : 'התחנה הבאה'}: <b>${esc(next.name)}</b></p>` : ''}
         </section>
         ${resultList(run.results, 'הניסויים בתחנה')}
         <div class="actions actions--row">
@@ -1293,7 +1438,7 @@
         ${resultList(run.results, 'הדגימות שבדקתם')}
         <div class="actions actions--row">
           ${left ? '<button type="button" class="btn btn--ghost" data-action="review">עוד סבב</button>' : ''}
-          <button type="button" class="btn btn--primary btn--grow" data-action="home">חזרה למעבדה${icon('arrowFwd', 20, 2.4)}</button>
+          <button type="button" class="btn btn--primary btn--grow" data-action="home">חזרה למעבדה</button>
         </div>
       </div>`);
     announce(`נוקו ${cleaned} מתוך ${run.results.length} דגימות`);
@@ -1305,11 +1450,31 @@
 
   function startExam() {
     if (!examUnlocked()) return;
-    const qs = shuffle(QUESTIONS.slice()).slice(0, examSize());
-    run = { mode: 'exam', questions: qs, index: 0, answers: qs.map(() => null), results: [] };
-    run.timer = createTimer(qs.length * CFG.examSecondsPerQuestion, updateStrip, () => submitExam(true));
+    const qs = examQuestions();
+    run = { mode: 'exam', questions: qs, index: 0, answers: qs.map(() => null), results: [], timer: null };
+    // The exam clock exists only in time mode ("מצב זמן").
+    if (state.timeMode) run.timer = createTimer(qs.length * CFG.examSecondsPerQuestion, updateStrip, () => submitExam(true));
     renderExamQuestion();
-    run.timer.start();
+    if (run.timer) run.timer.start();
+  }
+
+  // Like the real exam: questions from every station, in station (lesson) order, easy → hard
+  // within a station. Stations take turns (in random order) so all of them are represented, and
+  // each station's turns go round its levels, so it gives an easy, a medium and a hard one.
+  function examQuestions() {
+    const pools = shuffle(playableStations().map((st) => {
+      const byLevel = shuffle([1, 2, 3].map((level) => shuffle(stationQuestions(st.id).filter((q) => q.level === level))));
+      const pool = [];
+      while (byLevel.some((l) => l.length)) byLevel.forEach((l) => { if (l.length) pool.push(l.pop()); });
+      return pool;
+    }));
+    const picked = [];
+    for (let turn = 0; picked.length < examSize() && pools.some((p) => p.length); turn++) {
+      const pool = pools[turn % pools.length];
+      if (pool.length) picked.push(pool.shift());
+    }
+    const stationOrder = (q) => STATIONS.findIndex((st) => st.id === q.station);
+    return picked.sort((a, b) => stationOrder(a) - stationOrder(b) || a.level - b.level);
   }
 
   function answeredCount() {
@@ -1324,7 +1489,7 @@
     show('question', `<div class="screen screen--question screen--exam">
         ${topbar('מכינים את התרופה', `שאלה ${run.index + 1} מתוך ${n}`, 'close', 'יציאה מהמבחן', submitSmall)}
         <div id="exam-segments">${segments(n, run.index, (i) => run.answers[i] != null)}</div>
-        ${timerStrip(`עניתם על ${answeredCount()} מתוך ${n}`, 'זמן למבחן')}
+        ${run.timer ? timerStrip(`עניתם על ${answeredCount()} מתוך ${n}`, 'זמן למבחן') : progressStrip(answeredCount(), n)}
         ${questionCard(q, `מבחן דמה · שאלה ${pad2(run.index + 1)}`, levelChip(q.level))}
         ${optionsList(q, run.answers[run.index])}
         <div class="actions actions--row">
@@ -1334,13 +1499,15 @@
             : `<button type="button" class="btn btn--primary btn--grow" data-action="exam-next">הבאה${icon('arrowFwd', 20, 2.4)}</button>`}
         </div>
       </div>`);
-    updateStrip(run.timer.left());
+    if (run.timer) updateStrip(run.timer.left());
   }
 
   function updateExamProgress() {
     const n = run.questions.length;
     const text = document.getElementById('strip-text');
     if (text) text.textContent = `עניתם על ${answeredCount()} מתוך ${n}`;
+    const bar = document.getElementById('answered-bar');
+    if (bar) bar.style.width = `${(100 * answeredCount()) / n}%`;
     const seg = document.getElementById('exam-segments');
     if (seg) seg.innerHTML = segments(n, run.index, (i) => run.answers[i] != null);
   }
@@ -1362,15 +1529,15 @@
       title: 'להגיש את המבחן?',
       body: `<p class="sheet-text">${missing === 1 ? 'נשארה שאלה אחת בלי תשובה.' : `נשארו ${missing} שאלות בלי תשובה.`} שאלה בלי תשובה נחשבת טעות.</p>
         <div class="sheet-actions">
-          <button type="button" class="btn btn--ghost btn--grow" data-action="sheet-close">חזרה למבחן</button>
           <button type="button" class="btn btn--primary btn--grow" data-action="exam-confirm">הגשה</button>
+          <button type="button" class="btn btn--ghost btn--grow" data-action="sheet-close">חזרה למבחן</button>
         </div>`
     });
   }
 
   function submitExam(auto) {
     if (!run || run.mode !== 'exam' || run.ended) return;
-    run.timer.stop();
+    if (run.timer) run.timer.stop();
     if (sheet) closeSheet();
     run.ended = true;
     run.results = run.questions.map((q, i) => ({ q, chosen: run.answers[i], right: run.answers[i] === q.answer }));
@@ -1402,7 +1569,7 @@
         ${resultList(run.results, 'כל השאלות')}
         <div class="actions actions--row">
           <button type="button" class="btn btn--ghost" data-action="exam">מבחן חדש</button>
-          <button type="button" class="btn btn--primary btn--grow" data-action="home">חזרה למעבדה${icon('arrowFwd', 20, 2.4)}</button>
+          <button type="button" class="btn btn--primary btn--grow" data-action="home">חזרה למעבדה</button>
         </div>
       </div>`);
     announce(`${e.auto ? 'הזמן נגמר. ' : ''}ציון: ${e.score}%. ${e.right} מתוך ${total} נכונות.`);
@@ -1426,7 +1593,7 @@
           </div>
         </section>
         <div class="actions">
-          <button type="button" class="btn btn--primary btn--big" data-action="home">חזרה למעבדה${icon('arrowFwd', 20, 2.4)}</button>
+          <button type="button" class="btn btn--primary btn--big" data-action="home">חזרה למעבדה</button>
         </div>
       </div>`, focus);
     play('victory');
@@ -1455,6 +1622,7 @@
       </div>`;
     el.addEventListener('click', (e) => { if (e.target === el) closeSheet(); });
     sheetRoot.appendChild(el);
+    sheetShownAt = performance.now();
     app.inert = true;
     sheet = { el, onClose: opts.onClose, returnFocus };
     guardHistory();
@@ -1468,6 +1636,7 @@
     const s = sheet;
     sheet = null;
     s.el.remove();
+    screenShownAt = performance.now();
     app.inert = false;
     if (s.onClose) s.onClose();
     if (!replacing && s.returnFocus && document.contains(s.returnFocus)) s.returnFocus.focus({ preventScroll: true });
@@ -1486,10 +1655,12 @@
     if (!items.length) return;
     const first = items[0];
     const last = items[items.length - 1];
-    if (e.shiftKey && (document.activeElement === first || !sheet.el.contains(document.activeElement))) {
+    // Focus on the title (tabindex -1) or on <body> is not in the list: wrap from there too.
+    const inside = items.includes(document.activeElement);
+    if (e.shiftKey && (document.activeElement === first || !inside)) {
       e.preventDefault();
       last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
+    } else if (!e.shiftKey && (document.activeElement === last || !inside)) {
       e.preventDefault();
       first.focus();
     }
@@ -1528,12 +1699,13 @@
     if (!r) return;
     const q = r.q;
     const verdict = r.right
-      ? `<p class="verdict is-right">${icon('checkCircle', 18, 2.2)}עניתם נכון: <bdi dir="ltr" class="mono">${esc(q.options[q.answer])}</bdi></p>`
+      ? `<p class="verdict is-right">${icon('checkCircle', 18, 2.2)}<span>עניתם נכון: ${answerInline(q.options[q.answer])}</span></p>`
       : compareBoxes(q, r.chosen);
     openSheet({
       title: `${run.mode === 'exam' ? 'שאלה' : 'ניסוי'} ${pad2(index + 1)}`,
       wide: true,
-      body: `${q.context ? `<p class="qcontext">${fmt(q.context)}</p>` : ''}
+      body: `<p class="explain-prompt">${fmt(q.prompt)}</p>
+        ${q.context ? `<p class="qcontext">${fmt(q.context)}</p>` : ''}
         ${codeBlock(q.code)}
         ${verdict}
         ${stepsFull(q)}
@@ -1549,11 +1721,16 @@
     openSheet({
       title: 'איך משחקים?',
       body: `<ul class="bullets" role="list">
-          <li>כל ניסוי במעבדה הוא שאלה מהמבחן: קוד R קצר, ואתם בוחרים מה יהיה הפלט.</li>
+          <li>כל ניסוי במעבדה הוא שאלה בסגנון המבחן: קוד R קצר, ואתם בוחרים מה יהיה הפלט.</li>
           <li>תשובה נכונה מקדמת את התרופה ומאטה את ההתפשטות. טעות עולה בדגימה, ובכל תחנה יש ${CFG.livesPerRun} דגימות.</li>
           <li>אחרי כל תשובה יש הסבר צעד אחר צעד, ואפשר לנסות את הקוד ב-R.</li>
-          <li>השאלות שטעיתם בהן מחכות ב"ניקוי דגימות". בסוף מחכה מבחן דמה על זמן, כמו במבחן האמיתי.</li>
+          <li>השאלות שטעיתם בהן מחכות ב"ניקוי דגימות". בסוף מחכה מבחן דמה עם שאלות מכל התחנות.</li>
+          <li>רוצים להתאמן כמו במבחן? הפעילו את "מצב זמן": לכל שאלה יש שעון, ושאלה שהזמן שלה נגמר נחשבת טעות. גם מבחן הדמה יהיה על זמן.</li>
         </ul>
+        <div class="setting">
+          <span class="setting-text"><span class="setting-name" id="time-mode-name">מצב זמן</span><span class="setting-sub" id="time-mode-sub">שעון לכל שאלה, ומבחן הדמה על זמן</span></span>
+          <button type="button" class="switch" role="switch" aria-checked="${state.timeMode}" aria-labelledby="time-mode-name" aria-describedby="time-mode-sub" data-action="time-mode"><span class="switch-knob"></span></button>
+        </div>
         <div class="setting">
           <span class="setting-text"><span class="setting-name">צלילים</span><span class="setting-sub">צפצופים קטנים בתשובות</span></span>
           <button type="button" class="switch" role="switch" aria-checked="${state.sound}" aria-label="צלילים" data-action="sound"><span class="switch-knob"></span></button>
@@ -1562,7 +1739,7 @@
           <span class="setting-text"><span class="setting-name">איפוס ההתקדמות</span><span class="setting-sub">מוחק את כל מה ששמרנו במכשיר הזה</span></span>
           <button type="button" class="btn btn--danger btn--small" data-action="reset-ask">איפוס</button>
         </div>
-        <p class="credit">שאלות לדוגמה. השאלות האמיתיות יתווספו בקרוב.</p>`
+        <p class="credit">השאלות מבוססות על חומר התרגולים של שבועות <bdi dir="ltr">1–7</bdi>.</p>`
     });
   }
 
@@ -1570,7 +1747,8 @@
     const area = document.getElementById('reset-area');
     if (!area) return;
     area.classList.add('is-confirming');
-    area.innerHTML = `<p class="setting-warn">${icon('warning', 18)}בטוח? כל ההתקדמות תימחק, ואי אפשר לבטל.</p>
+    sheetShownAt = performance.now(); // "כן, לאפס" appears where "איפוס" was
+    area.innerHTML = `<p class="setting-warn">${icon('warning', 18)}בטוחים? כל ההתקדמות תימחק, ואי אפשר לבטל.</p>
       <div class="sheet-actions">
         <button type="button" class="btn btn--ghost btn--grow" data-action="reset-cancel">ביטול</button>
         <button type="button" class="btn btn--danger btn--grow" data-action="reset-confirm">כן, לאפס</button>
@@ -1579,7 +1757,7 @@
   }
 
   function resetProgress() {
-    const sound = state.sound;
+    const { sound, timeMode } = state; // settings survive a reset
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch (e) {
@@ -1589,6 +1767,7 @@
     run = null;
     state = defaultState();
     state.sound = sound;
+    state.timeMode = timeMode;
     touchToday();
     save();
     if (sheet) closeSheet(true);
@@ -1610,6 +1789,17 @@
     });
     play('select');
     announce(state.sound ? 'הצלילים פועלים' : 'הצלילים כבויים');
+  }
+
+  // "מצב זמן". It applies from the next question or exam (the switch lives on the home screen's sheet).
+  function toggleTimeMode() {
+    state.timeMode = !state.timeMode;
+    save();
+    document.querySelectorAll('[data-action="time-mode"]').forEach((b) => b.setAttribute('aria-checked', String(state.timeMode)));
+    const sub = app.querySelector('.station--exam .st-topic');
+    if (sub) sub.textContent = examSub(examSize());
+    play('select');
+    announce(state.timeMode ? 'מצב זמן פועל: לכל שאלה יש שעון, ומבחן הדמה על זמן.' : 'מצב זמן כבוי: אין שעון.');
   }
 
   /* ================================================================
@@ -1640,15 +1830,11 @@
     return webRPromise;
   }
 
-  let tryQuestion = null;
-
   function openTryR(q) {
-    tryQuestion = q;
     const rows = clamp(q.code.split('\n').length + 1, 4, 12);
     openSheet({
       title: 'נסו ב-R',
       wide: true,
-      focus: '#r-code',
       body: `<p class="sheet-text">אפשר לשנות את הקוד ולהריץ שוב. מה R מדפיס?</p>
         <label class="sr-only" for="r-code">קוד R</label>
         <textarea id="r-code" class="r-code" dir="ltr" rows="${rows}" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off">${esc(q.code)}</textarea>
@@ -1661,32 +1847,39 @@
     });
   }
 
-  function setRStatus(html, kind) {
-    const el = document.getElementById('r-status');
+  function setRStatus(html, kind, box) {
+    const el = (box || document).querySelector('#r-status');
     if (!el) return;
     el.className = `r-status${kind ? ` is-${kind}` : ''}`;
     el.innerHTML = html;
   }
 
+  const focusLost = () => !document.activeElement || document.activeElement === document.body;
+
   async function runR() {
-    const codeEl = document.getElementById('r-code');
-    const btn = document.querySelector('[data-action="r-run"]');
-    const out = document.getElementById('r-out');
-    if (!codeEl || !btn) return;
+    // Everything is tied to this sheet: if it closes while R loads, a later sheet is left alone.
+    const box = sheet && sheet.el;
+    const codeEl = box && box.querySelector('#r-code');
+    const btn = box && box.querySelector('[data-action="r-run"]');
+    const out = box && box.querySelector('#r-out');
+    if (!codeEl || !btn || !out) return;
     const code = codeEl.value;
     btn.disabled = true;
-    setRStatus('<span class="spinner" aria-hidden="true"></span>טוענים את R… (בפעם הראשונה זה לוקח כמה שניות)', 'loading');
+    setRStatus('<span class="spinner" aria-hidden="true"></span>טוענים את R… (בפעם הראשונה זה לוקח כמה שניות)', 'loading', box);
 
     let webR;
     try {
       webR = await loadWebR();
     } catch (e) {
+      if (!box.isConnected) return;
       btn.disabled = false;
-      setRStatus(`${icon('warning', 18)}<span>לא הצלחנו לטעון את R כאן (אולי אין חיבור לאינטרנט). העתיקו את הקוד והריצו אותו ב-RStudio.</span>`, 'error');
+      setRStatus(`${icon('warning', 18)}<span>לא הצלחנו לטעון את R כאן (אולי אין חיבור לאינטרנט). העתיקו את הקוד והריצו אותו ב-RStudio.</span>`, 'error', box);
       // Copying is now the main way forward: swap the button styles.
-      const copy = document.querySelector('[data-action="r-copy"]');
+      const copy = box.querySelector('[data-action="r-copy"]');
       if (copy) copy.classList.replace('btn--ghost', 'btn--primary');
       btn.classList.replace('btn--primary', 'btn--ghost');
+      // Disabling the focused button dropped focus to <body>: put it on the next step.
+      if (copy && focusLost()) copy.focus();
       return;
     }
 
@@ -1701,9 +1894,10 @@
     } finally {
       if (shelter) shelter.purge();
     }
-    if (!document.getElementById('r-out')) return; // the sheet was closed meanwhile
+    if (!box.isConnected) return; // the sheet was closed meanwhile
     btn.disabled = false;
-    setRStatus('', '');
+    if (focusLost()) btn.focus();
+    setRStatus('', '', box);
     out.hidden = false;
     out.innerHTML = lines.length
       ? lines.map((l) => `<span class="${l.type === 'stderr' ? 'r-err' : ''}">${esc(l.data)}</span>`).join('\n')
@@ -1722,6 +1916,7 @@
       ta.setAttribute('readonly', '');
       ta.className = 'copy-helper';
       (sheet ? sheet.el : document.body).appendChild(ta);
+      const prev = document.activeElement;
       ta.select();
       let ok = false;
       try {
@@ -1730,19 +1925,20 @@
         ok = false;
       }
       ta.remove();
+      if (prev && document.contains(prev)) prev.focus({ preventScroll: true });
       return ok;
     }
   }
 
   async function copyCode(btn) {
     const codeEl = document.getElementById('r-code');
-    const text = codeEl ? codeEl.value : (tryQuestion ? tryQuestion.code : '');
-    const ok = await copyText(text);
+    if (!codeEl) return;
+    const ok = await copyText(codeEl.value);
     if (ok) {
       btn.innerHTML = `${icon('check', 18, 2.6)}הקוד הועתק`;
       announce('הקוד הועתק. הדביקו אותו ב-RStudio.');
       window.setTimeout(() => { if (document.contains(btn)) btn.innerHTML = `${icon('copy', 18)}העתקת הקוד`; }, 2200);
-    } else if (codeEl) {
+    } else if (document.contains(codeEl)) {
       codeEl.focus();
       codeEl.select();
       setRStatus('לא הצלחנו להעתיק אוטומטית. הקוד מסומן: העתיקו אותו ידנית.', 'error');
@@ -1761,6 +1957,7 @@
     home: () => goHome(true),
     about: () => openAbout(),
     sound: () => toggleSound(),
+    'time-mode': () => toggleTimeMode(),
     exit: () => requestExit(),
     pick: (el) => pickOption(Number(el.dataset.index)),
     hint: () => openHint(),
@@ -1786,6 +1983,20 @@
     'reset-cancel': () => openAbout(),
     'reset-confirm': () => resetProgress()
   };
+
+  // Capture phase, so it also stops the sheet backdrop's own click handler.
+  document.addEventListener('click', (e) => {
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target || !(target.closest('[data-action]') || target.classList.contains('sheet-backdrop'))) return;
+    const now = performance.now();
+    const fresh = (app.contains(target) && now - screenShownAt < TAP_GUARD_MS) ||
+      (sheetRoot.contains(target) && now - sheetShownAt < TAP_GUARD_MS);
+    // e.detail > 1: the 2nd click of a double click/tap, never a deliberate new action.
+    if (fresh || e.detail > 1) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, true);
 
   document.addEventListener('click', (e) => {
     const el = e.target.closest('[data-action]');

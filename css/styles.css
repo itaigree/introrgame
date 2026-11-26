@@ -53,6 +53,8 @@ html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   background: var(--page);
+  /* Keyboard focus scrolls clear of the sticky bottom action bar (about 86px tall). */
+  scroll-padding-bottom: 104px;
 }
 
 body {
@@ -77,6 +79,8 @@ h1, h2, h3, p { margin: 0; }
 code, pre, textarea, .mono { font-family: var(--mono); }
 /* JetBrains Mono ligatures would draw R's <- and >= as arrows: students must see the real characters. */
 code, pre, textarea, .mono, [dir="ltr"] { font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }
+/* Every LTR island (code, numbers, R output) is isolated, so the Hebrew around it never reorders or mirrors it. */
+[dir="ltr"], bdi { unicode-bidi: isolate; }
 pre { margin: 0; }
 
 :focus-visible {
@@ -371,7 +375,7 @@ b { font-weight: 700; }
 .st-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .st-name { font-weight: 600; font-size: 15px; line-height: 1.2; }
 .st-topic { font-size: 12.5px; color: var(--muted); line-height: 1.35; }
-.st-topic code[dir="ltr"] { background: none; padding: 0; font-size: 11.5px; color: inherit; }
+.st-topic code[dir="ltr"] { background: none; padding: 0; font-size: 11.5px; color: inherit; white-space: nowrap; }
 .st-end { display: flex; align-items: center; gap: 6px; flex: none; color: var(--primary); }
 .st-end.is-cleared { color: var(--primary); }
 .st-count,
@@ -475,6 +479,11 @@ b { font-weight: 700; }
 .strip-time { display: flex; flex-direction: column; align-items: center; flex: none; }
 .strip-label { font-size: 11px; font-weight: 600; color: var(--panel-label); }
 .strip-clock { font-family: var(--mono); font-weight: 700; font-size: 20px; color: var(--hazard); line-height: 1.15; }
+/* Exam without time mode: answered count only, no clock. */
+.strip--calm { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-card); padding: 10px 14px; }
+.strip--calm .strip-icon { background: var(--tint); color: var(--primary); }
+.strip--calm .bar { background: var(--border); }
+.strip--calm .bar-fill { background: var(--primary); }
 .strip.is-urgent .bar-fill { background: var(--danger-on-dark); }
 .strip.is-urgent .strip-clock { color: var(--danger-on-dark); animation: urgent 0.9s ease-in-out infinite; }
 @keyframes urgent {
@@ -515,6 +524,9 @@ b { font-weight: 700; }
 .bolt { fill: #C25A00; }
 
 .qtitle { font-weight: 800; font-size: 27px; line-height: 1.05; }
+.qtitle.qtitle--long { font-size: 21px; line-height: 1.3; }
+.qtitle code[dir="ltr"] { font-size: 0.8em; }
+.explain-prompt { font-weight: 700; font-size: 16px; line-height: 1.35; }
 .qcontext { font-size: 14px; line-height: 1.4; color: var(--ink-2); }
 
 .code {
@@ -571,10 +583,13 @@ b { font-weight: 700; }
   font-size: 16px;
   font-weight: 500;
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   text-align: left;
 }
 .option--long .option-value { font-size: 14px; }
+/* A Hebrew option is a sentence: RTL text in the UI font; `code` inside it stays LTR. */
+.option--text .option-value { font-family: var(--sans); font-size: 15px; line-height: 1.4; text-align: start; }
+.option--text { padding-block: 9px; }
 .option-check { display: none; margin-inline-start: auto; flex: none; }
 .option-check circle { fill: var(--primary); }
 .option-check path { stroke: #FFFFFF; }
@@ -636,8 +651,9 @@ b { font-weight: 700; }
   overflow-x: auto;
   text-align: left;
 }
-.rc-prompt { color: #5A6878; }
+.rc-prompt { color: #7D8B99; }
 .rc-out { color: var(--green); font-weight: 700; }
+.rc-out.is-err { color: var(--danger-on-dark); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .hero--fail { padding: 0; gap: 0; overflow: hidden; }
 .hazard { height: 10px; background: repeating-linear-gradient(45deg, var(--hazard) 0 10px, var(--panel) 10px 20px); }
@@ -737,8 +753,8 @@ b { font-weight: 700; }
 .why-right-list .tbl-wrap { align-self: stretch; }
 .inline-vec { font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; }
 .iv.m-on { color: var(--primary-dark); font-weight: 700; }
-.iv.m-off { color: #8792A0; }
-.iv.m-drop { color: #8792A0; text-decoration: line-through; }
+.iv.m-off { color: #6B7685; }
+.iv.m-drop { color: #6B7685; text-decoration: line-through; }
 
 /* ---------- Fail: compare + steps ---------- */
 
@@ -769,6 +785,9 @@ b { font-weight: 700; }
 .cmp-value.is-long { font-size: 15px; }
 .cmp-value.is-xlong { font-size: 13px; }
 .cmp-value.is-struck { color: var(--danger); text-decoration: line-through; }
+.cmp-value.is-text { font-family: var(--sans); font-size: 15px; font-weight: 600; line-height: 1.4; text-align: start; overflow-wrap: break-word; }
+.cmp-value.is-text.is-struck { text-decoration: none; } /* a struck-through sentence is hard to read; the red box says it */
+.compare--stack { grid-template-columns: minmax(0, 1fr); }
 .cmp-none { font-size: 14px; font-weight: 600; color: var(--muted); }
 
 .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
@@ -806,10 +825,17 @@ b { font-weight: 700; }
 
 /* ---------- Explanation visuals ---------- */
 
-.vec { display: flex; gap: 5px; overflow-x: auto; padding: 3px 2px 2px; }
+/* Long vectors wrap into centred rows (still read left to right) instead of being cut off. */
+.vec {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  justify-content: safe center; /* a single over-long cell stays reachable by scrolling */
+  gap: 8px 5px;
+  overflow-x: auto;
+  padding: 3px 2px 2px;
+}
 .vcol { flex: none; display: flex; flex-direction: column; align-items: stretch; gap: 4px; text-align: center; }
-.vcol:first-child { margin-left: auto; }
-.vcol:last-child { margin-right: auto; }
 .vidx { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1; }
 .vcell {
   min-width: clamp(42px, 12.5vw, 52px);
@@ -852,7 +878,7 @@ b { font-weight: 700; }
 .tbl th,
 .tbl td { padding: 6px 10px; white-space: nowrap; }
 .tbl thead th { font-weight: 700; color: var(--muted); border-bottom: 1px solid var(--border); background: #F8F9FC; }
-.tbl tbody th { font-weight: 500; color: #8792A0; }
+.tbl tbody th { font-weight: 500; color: #6B7685; }
 .tbl tbody tr + tr > * { border-top: 1px solid #EEF1F5; }
 .tbl tr.hl > * { background: var(--tint-2); font-weight: 700; color: var(--primary-dark); }
 .tbl tr.hl > th:first-child { box-shadow: inset 3px 0 0 var(--primary); }
@@ -878,10 +904,12 @@ code.console-chip {
   color: var(--green);
   border-radius: 6px;
   padding: 4px 9px;
-  white-space: pre;
+  white-space: pre-wrap; /* a long line (an error message) wraps instead of hiding */
+  overflow-wrap: anywhere;
   text-align: left;
   direction: ltr;
 }
+code.console-chip.is-err { color: var(--danger-on-dark); }
 
 /* ---------- Result lists ---------- */
 
@@ -922,7 +950,10 @@ code.rr-code {
   direction: ltr;
 }
 .rr-answer { font-size: 12.5px; color: var(--ink-2); }
-.rr-answer .mono { font-weight: 700; color: var(--primary-dark); }
+.rr-answer .mono,
+.rr-answer .opt-text { font-weight: 700; color: var(--primary-dark); }
+.opt-text code[dir="ltr"] { font-weight: 500; }
+.hero-answer .opt-text { color: #FFFFFF; font-weight: 700; }
 .rr-go { color: #9AA3B0; flex: none; }
 
 /* ---------- Exam result ---------- */
@@ -1128,7 +1159,7 @@ code.rr-code {
   background: var(--panel);
   color: #E1E8F0;
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: 16px; /* under 16px, iOS Safari zooms the page when the field is focused */
   line-height: 1.6;
   padding: 12px;
   resize: vertical;
@@ -1247,6 +1278,9 @@ code.rr-code {
   .cases { font-size: 19px; }
   .btn--primary { font-size: 16px; }
   .score { font-size: 56px; }
+  .code { font-size: 12px; padding: 10px; }
+  .vec { column-gap: 3px; }
+  .vcell { min-width: 36px; padding: 0 3px; font-size: 13px; }
 }
 
 /* ---------- Reduced motion: no confetti, shake, pulses or slides ---------- */
