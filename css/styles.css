@@ -882,6 +882,18 @@ b { font-weight: 700; }
 .tbl tbody tr + tr > * { border-top: 1px solid #EEF1F5; }
 .tbl tr.hl > * { background: var(--tint-2); font-weight: 700; color: var(--primary-dark); }
 .tbl tr.hl > th:first-child { box-shadow: inset 3px 0 0 var(--primary); }
+/* Narrow phones: tighter cells, and column headers (often a bit of code like `prices > 100`) may wrap,
+   so a 4-column trace table fits without sideways scrolling. */
+@media (max-width: 400px) {
+  .tbl { font-size: 12px; }
+  .tbl th,
+  .tbl td { padding: 5px 7px; }
+  .tbl thead th { white-space: normal; vertical-align: bottom; min-width: 3ch; }
+  /* a code line in a trace table may wrap at its spaces rather than hide the columns after it */
+  .tbl td { white-space: normal; min-width: 3ch; }
+  /* a table in an explanation step also uses the space under the step number (on the right) */
+  .step-body > .tbl-wrap { margin-right: -34px; }
+}
 
 .tbl-wrap--dark { background: transparent; border-color: var(--panel-3); }
 .tbl-wrap--dark .tbl thead th { background: var(--panel-2); color: var(--panel-label); border-color: var(--panel-3); }
