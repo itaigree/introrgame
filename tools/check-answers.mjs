@@ -10,13 +10,14 @@
  *   - checks the fields (station exists, 4 options, valid answer, an explanation for every wrong option...)
  *   - runs the code in R and checks that the right option matches what R prints
  *   - checks that no wrong option also matches what R prints
+ *   - reports any R warning or message (students would see it too)
  *   - checks that the last `output` step of the explanation is exactly what R prints
  */
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import vm from 'node:vm';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -34,7 +35,7 @@ const normalize = (text) =>
     .split('\n')
     .map((line) => line.replace(/^\s*\[\d+\]\s?/, ''))
     .join(' ')
-    .replace(/\s+/g, ' ')
+    .replace(/("(?:[^"\\]|\\.)*")|\s+/g, (m, str) => str ?? ' ')
     .trim();
 
 const exact = (text) =>
@@ -42,13 +43,18 @@ const exact = (text) =>
     .split('\n')
     .map((line) => line.replace(/\s+$/, ''))
     .join('\n')
-    .trim();
+    .replace(/^\n+|\n+$/g, '');
 
 const problems = [];
 const report = (q, message) => problems.push(`[${q.id || '?'}] ${message}`);
 
 const stationIds = new Set(config.stations.map((s) => s.id));
 const seenIds = new Set();
+// Without a UTF-8 locale R escapes non-English letters in strings (\303\251 instead of é).
+// Windows R is UTF-8 already; on Linux and macOS pick a UTF-8 locale if the shell has none.
+const isUtf8 = /utf-?8/i.test(process.env.LC_ALL || process.env.LC_CTYPE || process.env.LANG || '');
+const utf8Locale = { linux: 'C.UTF-8', darwin: 'en_US.UTF-8' }[process.platform];
+const rEnv = isUtf8 || !utf8Locale ? process.env : { ...process.env, LC_ALL: utf8Locale };
 const dir = mkdtempSync(join(tmpdir(), 'r-check-'));
 
 try {
@@ -66,15 +72,34 @@ try {
       if (i !== q.answer && !(q.whyWrong && q.whyWrong[i])) report(q, `missing whyWrong for option ${'abcd'[i]}`);
     });
 
+    if (!q.code) report(q, 'missing code');
+    if (Array.isArray(q.options)) {
+      const norm = q.options.map(normalize);
+      if (new Set(norm).size !== norm.length) report(q, 'two options are the same');
+    }
+    (q.explanation || []).forEach((s, k) => {
+      const visuals = ['vector', 'table', 'output'].filter((v) => s[v]);
+      if (visuals.length > 1) report(q, `explanation step ${k + 1} has more than one visual`);
+      const v = s.vector;
+      if (v) for (const f of ['marks', 'labels']) {
+        if (v[f] && v[f].length !== v.values.length) report(q, `explanation step ${k + 1}: vector ${f} has ${v[f].length} items but values has ${v.values.length}`);
+      }
+      const t = s.table;
+      if (t) {
+        if (t.rows.some((r) => r.length !== t.columns.length)) report(q, `explanation step ${k + 1}: a table row does not have ${t.columns.length} cells`);
+        if (t.rowNames && t.rowNames.length !== t.rows.length) report(q, `explanation step ${k + 1}: rowNames and rows differ in length`);
+        if ((t.highlightRows || []).some((i) => !(i >= 0 && i < t.rows.length))) report(q, `explanation step ${k + 1}: highlightRows out of range`);
+      }
+    });
+    if (!Array.isArray(q.options) || typeof q.options[q.answer] !== 'string' || !q.code) continue;
+
     const file = join(dir, `${q.id}.R`);
     writeFileSync(file, q.code + '\n');
-    let out;
-    try {
-      out = execFileSync(rscript, ['--vanilla', file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch (err) {
-      report(q, `R error:\n${err.stderr || err.message}`);
-      continue;
-    }
+    const res = spawnSync(rscript, ['--vanilla', file], { encoding: 'utf8', env: rEnv });
+    if (res.error) { report(q, `could not run R: ${res.error.message}`); continue; }
+    if (res.status !== 0) { report(q, `R error:\n${res.stderr}`); continue; }
+    if (res.stderr.trim()) report(q, `R also printed a warning or message (students see it too):\n${res.stderr.trim()}`);
+    const out = res.stdout;
 
     const printed = normalize(out);
     const right = normalize(q.options[q.answer]);
