@@ -47,17 +47,86 @@ Progress is saved in each student's own browser (nothing is sent anywhere).
    (steps, optionally with a small vector / table / output picture), and `whyWrong` for each wrong option.
 2. In Hebrew text, put anything R-related inside backticks, for example `` `sum(x)` `` or `` `38.2 39.1` ``,
    so it is shown left to right. `**bold**` makes text bold.
-3. Check that every answer matches what R really prints:
-
-   ```
-   node tools/check-answers.mjs
-   ```
-
-   This needs [Node.js](https://nodejs.org) and R. It runs every question's code in R and reports any mismatch.
+3. Check that every answer matches what R really prints (see the next section). Fix everything it reports
+   before you publish: the game quietly leaves out a question whose `id`, `station`, `level`, `code`, `options`
+   or `answer` is broken.
 
 Stations (and whether they open one after the other), lives, how many questions a run draws, time mode and the
 mock exam (size, clock) are set in `js/config.js`. A station with no questions is shown as
 "בקרוב".
+
+## Checking the answers with R
+
+`tools/check-answers.mjs` runs every question's code in real R and compares it with the question. You need:
+
+- [Node.js](https://nodejs.org) version 18 or newer (`node --version` shows yours).
+- [R](https://cran.r-project.org) (any recent version). The checker runs R's `Rscript` program, so either `Rscript`
+  must be on your PATH, or you set the `RSCRIPT` environment variable to its full path.
+
+Run it from the repo folder (the one with `index.html`):
+
+**Linux and macOS** (Terminal):
+
+```
+node tools/check-answers.mjs
+```
+
+The R installers for macOS and most Linux packages put `Rscript` on the PATH. If yours is somewhere else
+(`which Rscript` prints nothing), give its path:
+
+```
+RSCRIPT=/opt/R/4.4.1/bin/Rscript node tools/check-answers.mjs
+```
+
+**Windows**: the R installer does **not** put `Rscript` on the PATH, so give its path (change `R-4.4.1` to the
+folder you have under `C:\Program Files\R`).
+
+Command Prompt (cmd):
+
+```
+set RSCRIPT=C:\Program Files\R\R-4.4.1\bin\Rscript.exe
+node tools\check-answers.mjs
+```
+
+PowerShell:
+
+```
+$env:RSCRIPT = "C:\Program Files\R\R-4.4.1\bin\Rscript.exe"
+node tools\check-answers.mjs
+```
+
+(Or add `C:\Program Files\R\R-4.4.1\bin` to the PATH in *Settings → System → About → Advanced system settings →
+Environment Variables*, open a new window, and run just `node tools\check-answers.mjs`.)
+
+To check another file in the same format, add its path: `node tools/check-answers.mjs my-new-questions.js`.
+
+It prints one line per question (`ok`, `man` for a `manual` question, or `FAIL`), then either
+**"All 203 questions match R."** or the list of problems, and then exits with code 1. If R can't be found it says so
+once and stops. For every question it checks:
+
+- the fields, the same way the game does: `id` and every option are strings in quotes, 4 options, `answer` 0–3,
+  a known station, a `whyWrong` for every wrong option, well-formed explanation steps and pictures, and paired
+  `` ` `` backticks in the Hebrew texts;
+- that R prints the right option and none of the wrong ones (the code may run at most 20 seconds);
+- that R prints no warning or message (students would see it too);
+- that the console the game shows is exactly what R prints: the last `output` step of the explanation, or, when
+  there is none, `[1] ` followed by the right option (so add an `output` step whenever R prints something else,
+  for example `cat()`, a named vector, a factor or a matrix).
+
+When the right answer is an error (its option contains the word `Error`, for example `'שגיאה (Error)'`), the check
+passes when R stops with an error, and the question needs an `output` step with R's exact error message, so a typo
+in the code can't pass as the intended error. A syntax error (`Error: unexpected ...`) is reported unless that
+output step shows it.
+
+Optional fields for special cases (also described at the top of `js/questions.js`):
+
+| Field | Meaning |
+| --- | --- |
+| `manual: true` | Run the code but don't compare the options with R (only when the right option is Hebrew text). Warnings and the `output` step are still checked. |
+| `warning: true` | R may print a warning or message for this question. The `output` step may then also include the warning lines. |
+| `warning: 'coercion'` | The same, but only a warning or message containing this text is accepted. |
+| `expectError: true` | The right answer is an R error even though its option has no word `Error`. |
+| `expectError: false` | The right answer is not an error even though its option contains the word `Error`. |
 
 ## Files
 

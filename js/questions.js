@@ -3,23 +3,29 @@
  * A station run draws some of each level (questionsPerRun in js/config.js), the ones not yet answered right first.
  * Written from the course material in the style of the exam. None of the exam's questions are used.
  * To check that every answer matches what R really prints, run:  node tools/check-answers.mjs
- * (needs Node and R installed)
+ * (needs Node 18+ and R; README.md explains how to run it on Windows, macOS and Linux)
  *
  * Fields of a question:
- *   id          unique and stable (progress is saved by id, so don't rename after release)
+ *   id          a string in quotes, unique and stable (progress is saved by id, so don't rename after release)
  *   station     the id of a station from js/config.js
  *   level       1 = קל, 2 = בינוני, 3 = קשה
  *   prompt      optional question line; default "מה יהיה הפלט?" (for example "מה יודפס?")
  *   context     optional short Hebrew line shown above the code
  *   code        the R code (use \n for new lines)
- *   options     4 answers, written like the exam (without the [1]). An option with Hebrew letters is shown as
- *               right-to-left text, for example 'שגיאה (Error)'. If the right answer is an error, its option must
- *               contain the word Error.
+ *   options     4 answers, each a non-empty string in quotes, written like the exam (without the [1]). An option
+ *               with Hebrew letters is shown as right-to-left text, for example 'שגיאה (Error)'. If the right
+ *               answer is an error, its option must contain the word Error (or set expectError), and the
+ *               explanation needs an output step with R's exact error message.
  *   answer      index of the right option: 0 = a, 1 = b, 2 = c, 3 = d
  *   hint        a Hebrew hint
  *   explanation the step-by-step explanation shown after answering (see below)
  *   whyWrong    for each WRONG option index: why it's tempting and why it's wrong
- *   manual      optional, true = the checker runs the code but doesn't compare (only for a Hebrew-text right answer)
+ *   manual      optional, true = the checker runs the code but doesn't compare the options (only for a Hebrew-text
+ *               right answer; R warnings and the output step are still checked)
+ *   warning     optional, true = R may print a warning or message for this question (students see it too);
+ *               a string = the same, but only a warning or message that contains this text is accepted
+ *   expectError optional, true = the right answer is an R error even though its option has no word Error;
+ *               false = the right answer is not an error even though its option contains the word Error
  *
  * Text formatting inside prompt / context / options / hint / explanation / whyWrong:
  *   `code`   shown as R code, left to right (use it for anything R: code, values, output)
@@ -31,7 +37,9 @@
  *           labels: optional small text under each cell (for example TRUE / FALSE)
  *           showIndex: show the positions 1, 2, 3... above the cells
  *   table:  { columns: [...], rows: [[...], ...], rowNames: [...], highlightRows: [0-based indexes] }
- *   output: 'exactly what R prints, for example [1] 2'
+ *   output: 'exactly what R prints, for example [1] 2' (the checker compares the last output step with R;
+ *           with a warning field it may also include R's warning lines). Without any output step the game
+ *           shows "[1] " + the right option (or nothing for a Hebrew-text option), and the checker checks that.
  */
 window.GAME_QUESTIONS = [
   // ===== שבוע 1: משתנים וסוגי נתונים =====
