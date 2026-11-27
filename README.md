@@ -20,6 +20,10 @@ Progress is saved in each student's own browser (nothing is sent anywhere).
 
 ## How the game works
 
+- **The story:** the students are the lab team making the cure, and the 7 stations are the steps of that work
+  (registering at the lab, collecting samples, the microscope, the sample freezer, the lab robot, the testing machine,
+  the production line). Every question happens inside its station's story. A short story screen opens each station
+  the first time it is played in a round, and the stories are written in `js/config.js`.
 - **Lab stations** (one per week) are all open: students practise whatever they want, in any order. Each run draws
   9 of the station's questions (3 easy, 3 medium, 3 hard), questions the student has never seen first, so playing a
   station again brings new questions. A run starts with 3 samples (lives).
