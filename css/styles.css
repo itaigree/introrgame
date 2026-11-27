@@ -894,6 +894,11 @@ b { font-weight: 700; }
   /* a table in an explanation step also uses the space under the step number (on the right) */
   .step-body > .tbl-wrap { margin-right: -34px; }
 }
+@media (max-width: 360px) {
+  .tbl { font-size: 11px; }
+  .tbl th,
+  .tbl td { padding: 5px 5px; }
+}
 
 .tbl-wrap--dark { background: transparent; border-color: var(--panel-3); }
 .tbl-wrap--dark .tbl thead th { background: var(--panel-2); color: var(--panel-label); border-color: var(--panel-3); }

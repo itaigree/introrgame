@@ -4,8 +4,10 @@ A phone-friendly practice game for the first-semester "Intro to R" course. Every
 the students pick what R prints, just like the exam. The story is only flavour: a mysterious virus is spreading, and
 every right answer brings the cure closer.
 
-The interface is in Hebrew. There are 7 lab stations, one per course week (1–7), and each has easy, medium and hard
-questions written from the course material in the exam's style. None of the exam's own questions are used.
+The interface is in Hebrew. There are 7 lab stations, one per course week (1–7), with 203 questions in all: 29 per
+station (10 easy, 10 medium, 9 hard), written from the course material in the exam's style. Every answer was checked in
+real R, and every question was compared with the exam so that none of the exam's own questions (or close variations of
+them) is in the game.
 
 ## Play it
 
