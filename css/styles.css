@@ -1042,8 +1042,12 @@ code.rr-code {
   color: var(--ink);
   white-space: pre-wrap; /* the whole line, wrapped if it is long, never cut off */
   overflow-wrap: break-word;
+  text-wrap: balance; /* two even lines rather than a lone ")" on the second one */
   text-align: right;
   direction: ltr;
+}
+@media (max-width: 360px) {
+  code.rr-code { font-size: 12px; }
 }
 .rr-answer { font-size: 12.5px; color: var(--ink-2); }
 .rr-answer .mono,
