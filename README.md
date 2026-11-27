@@ -20,16 +20,19 @@ Progress is saved in each student's own browser (nothing is sent anywhere).
 
 ## How the game works
 
-- **Lab stations** (one per week) open one after the other. Each run draws 9 of the station's questions (3 easy,
-  3 medium, 3 hard), the ones the student hasn't answered right yet first, so playing a station again brings new
-  questions. A run starts with 3 samples (lives).
+- **Lab stations** (one per week) are all open: students practise whatever they want, in any order. Each run draws
+  9 of the station's questions (3 easy, 3 medium, 3 hard), questions the student has never seen first, so playing a
+  station again brings new questions. A run starts with 3 samples (lives).
 - A wrong answer costs a sample and shows a step-by-step explanation of what R did, plus why that specific wrong
   answer is tempting.
+- **The cure %** grows with right answers and reaches 100% when every station has been completed. Then
+  **"מתחילים מחדש עם שאלות חדשות"** starts a new round: the stations and the cure start over, and each station
+  brings questions the student hasn't seen yet. What they solved, their mistakes and their exam record are kept.
 - Questions the students got wrong go to **"דגימות מזוהמות"** (review mode, no lives and no timer) until they answer them right.
 - **"מכינים את התרופה"** is a mock exam with questions from all stations, easy to hard within each topic, and no
-  feedback until the end, like the real exam.
-- **"מצב זמן"** (time mode) is off by default. Students can turn it on in the menu (⋯): each question then gets a
-  countdown and the mock exam gets a clock.
+  feedback until the end, like the real exam. It is timed by default (90 seconds a question); students can turn the
+  clock off in the menu (⋯).
+- **"מצב זמן בתחנות"** (off by default, in the menu) adds a countdown to every station question.
 - **"נסו ב-R"** runs the question's code in a real R inside the browser (webR). If it can't load, students can copy the
   code and paste it into RStudio.
 
@@ -48,8 +51,9 @@ Progress is saved in each student's own browser (nothing is sent anywhere).
 
    This needs [Node.js](https://nodejs.org) and R. It runs every question's code in R and reports any mismatch.
 
-Stations, lives, how many questions a run draws, time mode and the mock exam size are set in `js/config.js`. A station with no questions is shown as
-"בקרוב" and doesn't block the next one.
+Stations (and whether they open one after the other), lives, how many questions a run draws, time mode and the
+mock exam (size, clock) are set in `js/config.js`. A station with no questions is shown as
+"בקרוב".
 
 ## Files
 

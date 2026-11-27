@@ -6,8 +6,9 @@
  * Stations are played in the order they appear here (the order of the course weeks).
  */
 window.GAME_CONFIG = {
-  // true: a station opens only after the one before it is cleared.
-  lockStations: true,
+  // false: every station is open from the start and students practise whatever they want.
+  // true: a station opens only after the one before it is cleared (and the mock exam after all of them).
+  lockStations: false,
 
   // Samples (lives) per station run.
   livesPerRun: 3,
@@ -16,19 +17,22 @@ window.GAME_CONFIG = {
   // Questions the student hasn't answered right yet come first, so every run is different.
   questionsPerRun: { 1: 3, 2: 3, 3: 3 },
 
-  // "מצב זמן" (time mode). Students turn it on or off in the settings sheet.
+  // "מצב זמן" (time mode) for the station questions. Students turn it on or off in the settings sheet.
   // defaultOn: whether it starts on for a new player.
   // When it's on, each station question has a countdown by level (1 = easy, 2 = medium, 3 = hard)
-  // and running out of time counts as a wrong answer. The mock exam then gets one shared clock.
+  // and running out of time counts as a wrong answer.
   timer: {
     defaultOn: false,
     secondsByLevel: { 1: 90, 2: 120, 3: 150 }
   },
 
   // The mock exam ("מכינים את התרופה"): questions from every station, in station order.
+  // timedByDefault: the exam has one clock (secondsPerQuestion x the number of questions) unless the
+  // student turns "מבחן הדמה על זמן" off in the settings sheet.
   exam: {
     maxQuestions: 20,
-    secondsPerQuestion: 90
+    secondsPerQuestion: 90,
+    timedByDefault: true
   },
 
   // The outbreak story numbers (only for fun, they don't affect the score).

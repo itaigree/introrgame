@@ -149,6 +149,7 @@
     lockStations: RAW.lockStations !== false,
     livesPerRun: posInt(RAW.livesPerRun, 3),
     timeModeDefault: rawTimer.defaultOn === true,
+    examTimedDefault: rawExam.timedByDefault !== false,
     secondsByLevel: rawTimer.secondsByLevel || {},
     perRun: perLevel(RAW.questionsPerRun),
     examMax: posInt(rawExam.maxQuestions, 20),
@@ -232,6 +233,9 @@
       mistakes: [],
       attempts: {},
       stationsCleared: {},
+      // A round = one pass through all the stations. "מתחילים מחדש עם שאלות חדשות" starts the next one.
+      round: 1,
+      roundRight: {}, // ids answered right in this round (the cure % counts them)
       cases: CFG.startCases,
       casesToday: { date: todayKey(), delta: 0 },
       daysPlayed: [],
@@ -240,7 +244,8 @@
       examBest: null,
       victoryShown: false,
       sound: true,
-      timeMode: CFG.timeModeDefault // "מצב זמן": question countdowns and the exam clock
+      timeMode: CFG.timeModeDefault, // "מצב זמן": a countdown on every station question
+      examTimed: CFG.examTimedDefault // "מבחן הדמה על זמן": one clock for the mock exam
     };
   }
 
@@ -270,6 +275,12 @@
     if (isObj(saved.stationsCleared)) {
       Object.keys(saved.stationsCleared).forEach((id) => { if (saved.stationsCleared[id] === true) s.stationsCleared[id] = true; });
     }
+    s.round = Math.max(1, count(saved.round, 1));
+    if (isObj(saved.roundRight)) {
+      Object.keys(saved.roundRight).forEach((id) => { if (saved.roundRight[id] === true) s.roundRight[id] = true; });
+    } else if (s.round === 1) {
+      s.roundRight = Object.assign({}, s.mastered); // saved before rounds existed: this is still round 1
+    }
     s.cases = count(saved.cases, s.cases);
     if (isObj(saved.casesToday) && typeof saved.casesToday.date === 'string' && Number.isFinite(saved.casesToday.delta)) {
       s.casesToday = { date: saved.casesToday.date, delta: Math.round(saved.casesToday.delta) };
@@ -283,6 +294,7 @@
     s.victoryShown = saved.victoryShown === true;
     s.sound = saved.sound !== false;
     if (typeof saved.timeMode === 'boolean') s.timeMode = saved.timeMode;
+    if (typeof saved.examTimed === 'boolean') s.examTimed = saved.examTimed;
     return s;
   }
 
@@ -311,14 +323,33 @@
 
   const stationQuestions = (sid) => STATION_QS[sid] || [];
   const masteredIn = (list) => list.filter((q) => state.mastered[q.id]).length;
-  const allMastered = () => QUESTIONS.length > 0 && masteredIn(QUESTIONS) === QUESTIONS.length;
-  // Rounded for display, but never 100% while a question is still not mastered (199/200 would round up).
-  function curePct() {
-    if (!QUESTIONS.length) return 0;
-    const pct = Math.round((100 * masteredIn(QUESTIONS)) / QUESTIONS.length);
-    return pct === 100 && !allMastered() ? 99 : pct;
-  }
   const playableStations = () => STATIONS.filter((s) => stationQuestions(s.id).length > 0);
+  const allCleared = () => {
+    const playable = playableStations();
+    return playable.length > 0 && playable.every((s) => state.stationsCleared[s.id]);
+  };
+  const unseenCount = () => QUESTIONS.filter((q) => !state.attempts[q.id]).length;
+
+  // How many questions one run of this station draws.
+  const runSize = (qs) => [1, 2, 3].reduce((n, level) => n + Math.min(CFG.perRun[level], qs.filter((q) => q.level === level).length), 0);
+
+  // The cure: every station is an equal share, full once the station is cleared in this round. Before that,
+  // each right answer in this round adds a little, but never the whole share: clearing the station does.
+  function stationShare(st) {
+    if (state.stationsCleared[st.id]) return 1;
+    const qs = stationQuestions(st.id);
+    const size = runSize(qs);
+    if (!size) return 0;
+    const right = qs.filter((q) => state.roundRight[q.id]).length;
+    return Math.min(right, size - 1) / size;
+  }
+  // Rounded for display, but 100% only once every station is cleared.
+  function curePct() {
+    const playable = playableStations();
+    if (!playable.length) return 0;
+    const pct = Math.round((100 * playable.reduce((sum, st) => sum + stationShare(st), 0)) / playable.length);
+    return pct === 100 && !allCleared() ? 99 : pct;
+  }
 
   // 'empty' | 'cleared' | 'locked' | 'open'
   function stationStatus(index) {
@@ -345,7 +376,7 @@
 
   function examUnlocked() {
     if (!QUESTIONS.length) return false;
-    return !CFG.lockStations || playableStations().every((s) => state.stationsCleared[s.id]);
+    return !CFG.lockStations || state.round > 1 || allCleared();
   }
 
   const examSize = () => Math.min(CFG.examMax, QUESTIONS.length);
@@ -378,6 +409,7 @@
     if (right) {
       a.right++;
       state.mastered[q.id] = true;
+      state.roundRight[q.id] = true;
       if (countStreak) {
         state.streak++;
         state.bestStreak = Math.max(state.bestStreak, state.streak);
@@ -523,7 +555,7 @@
   function goHome(focus) {
     if (run && run.timer) run.timer.stop();
     run = null;
-    if (allMastered() && !state.victoryShown) {
+    if (allCleared() && !state.victoryShown) {
       state.victoryShown = true;
       save();
       renderVictory(focus);
@@ -1010,7 +1042,7 @@
 
   function examSub(n) {
     if (!n) return 'מבחן דמה · בקרוב';
-    return `מבחן דמה · ${n} שאלות${state.timeMode ? ' · על זמן' : ''}`;
+    return `מבחן דמה · ${n} שאלות${state.examTimed ? ' · על זמן' : ''}`;
   }
 
   function examRow() {
@@ -1041,6 +1073,53 @@
     return `<button type="button" class="btn btn--primary btn--big" data-action="exam">למבחן הדמה${icon('arrowFwd', 20, 2.4)}</button>`;
   }
 
+  function newRoundSub() {
+    const unseen = unseenCount();
+    if (!unseen) return 'כבר ראיתם את כל השאלות. הן יחזרו בסדר חדש.';
+    return unseen === 1 ? 'עוד שאלה אחת שעוד לא ראיתם מחכה בתחנות' : `עוד ${unseen} שאלות שעוד לא ראיתם מחכות בתחנות`;
+  }
+
+  function newRoundCard() {
+    return `<button type="button" class="new-round" data-action="new-round-ask">
+        <span class="new-round-icon">${icon('loop', 20, 2.2)}</span>
+        <span class="new-round-text">
+          <span class="new-round-title">מתחילים מחדש עם שאלות חדשות</span>
+          <span class="new-round-sub">${newRoundSub()}</span>
+        </span>
+        ${icon('chevronFwd', 18, 2.2)}
+      </button>`;
+  }
+
+  function askNewRound() {
+    openSheet({
+      title: 'מתחילים סבב חדש?',
+      body: `<p class="sheet-text">התחנות והתרופה יתחילו שוב מאפס, ובכל תחנה יגיעו קודם שאלות שעוד לא ראיתם. השאלות שכבר פתרתם, הדגימות המזוהמות והשיא במבחן הדמה נשמרים.</p>
+        <div class="sheet-actions">
+          <button type="button" class="btn btn--primary btn--grow" data-action="new-round">כן, מתחילים</button>
+          <button type="button" class="btn btn--ghost btn--grow" data-action="sheet-close">ביטול</button>
+        </div>`
+    });
+  }
+
+  // A new round: the stations' checkmarks and the outbreak start over. What was learned stays (mastered
+  // questions, mistakes to fix, the exam record). With lockStations on, the stations lock again from the
+  // first one, but the mock exam stays open.
+  function newRound() {
+    if (run && run.timer) run.timer.stop();
+    run = null;
+    state.round += 1;
+    state.stationsCleared = {};
+    state.roundRight = {};
+    state.victoryShown = false;
+    state.cases = CFG.startCases;
+    state.casesToday = { date: todayKey(), delta: 0 };
+    touchToday();
+    save();
+    if (sheet) closeSheet(true);
+    renderHome();
+    toast(`סבב ${state.round} התחיל`);
+  }
+
   function renderHome(focus) {
     run = null;
     const cure = curePct();
@@ -1051,6 +1130,7 @@
     const playable = playableStations();
     const cleared = playable.filter((s) => state.stationsCleared[s.id]).length;
     const mistakes = state.mistakes.length;
+    const meta = `${state.round > 1 ? `סבב ${state.round} · ` : ''}${cleared} מתוך ${playable.length} הושלמו`;
 
     const deltaHtml = delta === 0 ? '' : delta > 0
       ? `<span class="cases-delta is-up"><span aria-hidden="true">▲</span> <bdi dir="ltr">${thousands(delta)}</bdi> היום</span>`
@@ -1101,12 +1181,13 @@
         <section class="stations" aria-labelledby="stations-title">
           <div class="section-head">
             <h2 id="stations-title">תחנות במעבדה</h2>
-            <span class="section-meta">${cleared} מתוך ${playable.length} הושלמו</span>
+            <span class="section-meta">${meta}</span>
           </div>
           <ul class="station-list" role="list">
             ${STATIONS.map((st, i) => stationRow(st, i, i === current)).join('')}
             ${examRow()}
           </ul>
+          ${allCleared() ? newRoundCard() : ''}
           ${QUESTIONS.length ? '' : '<p class="empty-note">עוד אין שאלות במאגר. הן יתווספו בקרוב.</p>'}
         </section>
 
@@ -1126,11 +1207,12 @@
     showQuestion();
   }
 
-  // A station run: per level (easy → hard) up to questionsPerRun questions, the ones not yet
-  // answered right first, in random order, so a replay is not the same run again.
+  // A station run: per level (easy → hard) up to questionsPerRun questions, in random order, but questions
+  // never seen before come first, then ones not answered right yet, so a replay (or a new round) brings new ones.
   function runQuestions(qs) {
+    const freshness = (q) => (state.mastered[q.id] ? 2 : state.attempts[q.id] ? 1 : 0);
     return [1, 2, 3].flatMap((level) => shuffle(qs.filter((q) => q.level === level))
-      .sort((a, b) => Number(!!state.mastered[a.id]) - Number(!!state.mastered[b.id]))
+      .sort((a, b) => freshness(a) - freshness(b))
       .slice(0, CFG.perRun[level]));
   }
 
@@ -1452,8 +1534,8 @@
     if (!examUnlocked()) return;
     const qs = examQuestions();
     run = { mode: 'exam', questions: qs, index: 0, answers: qs.map(() => null), results: [], timer: null };
-    // The exam clock exists only in time mode ("מצב זמן").
-    if (state.timeMode) run.timer = createTimer(qs.length * CFG.examSecondsPerQuestion, updateStrip, () => submitExam(true));
+    // The exam clock is on unless the student turned "מבחן הדמה על זמן" off.
+    if (state.examTimed) run.timer = createTimer(qs.length * CFG.examSecondsPerQuestion, updateStrip, () => submitExam(true));
     renderExamQuestion();
     if (run.timer) run.timer.start();
   }
@@ -1584,16 +1666,18 @@
         <section class="victory">
           <span class="victory-badge">${icon('flask', 40, 2)}</span>
           <h1 class="victory-title">עצרתם את ההתפרצות!</h1>
-          <p class="victory-sub">התרופה מוכנה. כל הכבוד!</p>
+          <p class="victory-sub">${state.round > 1 ? `סיימתם את סבב ${state.round}. ` : ''}התרופה מוכנה. כל הכבוד!</p>
           ${mapSvg(0.6, true)}
           <div class="victory-stats">
-            <div><span class="vs-num" dir="ltr">${QUESTIONS.length}</span><span class="vs-label">שאלות</span></div>
+            <div><span class="vs-num" dir="ltr">${masteredIn(QUESTIONS)}</span><span class="vs-label">שאלות נפתרו</span></div>
             <div><span class="vs-num" dir="ltr">${state.bestStreak}</span><span class="vs-label">השיא ברצף</span></div>
             <div><span class="vs-num" dir="ltr">${Math.max(1, state.daysPlayed.length)}</span><span class="vs-label">ימים</span></div>
           </div>
         </section>
+        <p class="victory-next">${newRoundSub()}</p>
         <div class="actions">
-          <button type="button" class="btn btn--primary btn--big" data-action="home">חזרה למעבדה</button>
+          <button type="button" class="btn btn--primary btn--big" data-action="new-round">${icon('loop', 20, 2.4)}מתחילים מחדש עם שאלות חדשות</button>
+          <button type="button" class="btn btn--ghost btn--big" data-action="home">חזרה למעבדה</button>
         </div>
       </div>`, focus);
     play('victory');
@@ -1724,11 +1808,17 @@
           <li>כל ניסוי במעבדה הוא שאלה בסגנון המבחן: קוד R קצר, ואתם בוחרים מה יהיה הפלט.</li>
           <li>תשובה נכונה מקדמת את התרופה ומאטה את ההתפשטות. טעות עולה בדגימה, ובכל תחנה יש ${CFG.livesPerRun} דגימות.</li>
           <li>אחרי כל תשובה יש הסבר צעד אחר צעד, ואפשר לנסות את הקוד ב-R.</li>
-          <li>השאלות שטעיתם בהן מחכות ב"ניקוי דגימות". בסוף מחכה מבחן דמה עם שאלות מכל התחנות.</li>
-          <li>רוצים להתאמן כמו במבחן? הפעילו את "מצב זמן": לכל שאלה יש שעון, ושאלה שהזמן שלה נגמר נחשבת טעות. גם מבחן הדמה יהיה על זמן.</li>
+          <li>כל התחנות פתוחות: מתרגלים מה שרוצים, באיזה סדר שרוצים. השאלות שטעיתם בהן מחכות ב"ניקוי דגימות".</li>
+          <li>מבחן הדמה כולל שאלות מכל התחנות, והוא על זמן כמו המבחן האמיתי (אפשר לכבות את השעון כאן למטה).</li>
+          <li>כשכל התחנות הושלמו, התרופה מוכנה. אחר כך אפשר להתחיל מחדש עם שאלות חדשות: בכל תחנה יש הרבה יותר שאלות ממה שמופיע בסבב אחד.</li>
+          <li>רוצים שעון גם בתחנות? הפעילו את "מצב זמן בתחנות": לכל שאלה יש שעון, ושאלה שהזמן שלה נגמר נחשבת טעות.</li>
         </ul>
         <div class="setting">
-          <span class="setting-text"><span class="setting-name" id="time-mode-name">מצב זמן</span><span class="setting-sub" id="time-mode-sub">שעון לכל שאלה, ומבחן הדמה על זמן</span></span>
+          <span class="setting-text"><span class="setting-name" id="exam-timed-name">מבחן הדמה על זמן</span><span class="setting-sub" id="exam-timed-sub">${examMinutes()} דקות ל-${examSize()} שאלות, כמו במבחן</span></span>
+          <button type="button" class="switch" role="switch" aria-checked="${state.examTimed}" aria-labelledby="exam-timed-name" aria-describedby="exam-timed-sub" data-action="exam-timed"><span class="switch-knob"></span></button>
+        </div>
+        <div class="setting">
+          <span class="setting-text"><span class="setting-name" id="time-mode-name">מצב זמן בתחנות</span><span class="setting-sub" id="time-mode-sub">שעון לכל שאלה בתחנות</span></span>
           <button type="button" class="switch" role="switch" aria-checked="${state.timeMode}" aria-labelledby="time-mode-name" aria-describedby="time-mode-sub" data-action="time-mode"><span class="switch-knob"></span></button>
         </div>
         <div class="setting">
@@ -1757,7 +1847,7 @@
   }
 
   function resetProgress() {
-    const { sound, timeMode } = state; // settings survive a reset
+    const { sound, timeMode, examTimed } = state; // settings survive a reset
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch (e) {
@@ -1768,6 +1858,7 @@
     state = defaultState();
     state.sound = sound;
     state.timeMode = timeMode;
+    state.examTimed = examTimed;
     touchToday();
     save();
     if (sheet) closeSheet(true);
@@ -1791,15 +1882,26 @@
     announce(state.sound ? 'הצלילים פועלים' : 'הצלילים כבויים');
   }
 
-  // "מצב זמן". It applies from the next question or exam (the switch lives on the home screen's sheet).
+  // "מצב זמן בתחנות". It applies from the next question (the switch lives on the home screen's sheet).
   function toggleTimeMode() {
     state.timeMode = !state.timeMode;
     save();
     document.querySelectorAll('[data-action="time-mode"]').forEach((b) => b.setAttribute('aria-checked', String(state.timeMode)));
+    play('select');
+    announce(state.timeMode ? 'מצב זמן בתחנות פועל: לכל שאלה יש שעון.' : 'מצב זמן בתחנות כבוי: אין שעון בתחנות.');
+  }
+
+  const examMinutes = () => Math.round((examSize() * CFG.examSecondsPerQuestion) / 60);
+
+  // "מבחן הדמה על זמן". It applies from the next exam.
+  function toggleExamTimed() {
+    state.examTimed = !state.examTimed;
+    save();
+    document.querySelectorAll('[data-action="exam-timed"]').forEach((b) => b.setAttribute('aria-checked', String(state.examTimed)));
     const sub = app.querySelector('.station--exam .st-topic');
     if (sub) sub.textContent = examSub(examSize());
     play('select');
-    announce(state.timeMode ? 'מצב זמן פועל: לכל שאלה יש שעון, ומבחן הדמה על זמן.' : 'מצב זמן כבוי: אין שעון.');
+    announce(state.examTimed ? `מבחן הדמה על זמן: ${examMinutes()} דקות.` : 'מבחן הדמה בלי שעון.');
   }
 
   /* ================================================================
@@ -1958,6 +2060,7 @@
     about: () => openAbout(),
     sound: () => toggleSound(),
     'time-mode': () => toggleTimeMode(),
+    'exam-timed': () => toggleExamTimed(),
     exit: () => requestExit(),
     pick: (el) => pickOption(Number(el.dataset.index)),
     hint: () => openHint(),
@@ -1979,6 +2082,8 @@
       closeSheet(true);
       goHome();
     },
+    'new-round-ask': () => askNewRound(),
+    'new-round': () => newRound(),
     'reset-ask': () => askReset(),
     'reset-cancel': () => openAbout(),
     'reset-confirm': () => resetProgress()
