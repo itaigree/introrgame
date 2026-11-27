@@ -171,7 +171,9 @@
       name: String(s.name || s.id),
       topic: String(s.topic || ''),
       topicCode: String(s.topicCode || ''),
-      icon: ICONS[s.icon] ? s.icon : 'flask' // unknown icon names get the lab flask
+      icon: ICONS[s.icon] ? s.icon : 'flask', // unknown icon names get the lab flask
+      intro: isObj(s.story) && typeof s.story.intro === 'string' ? s.story.intro : '',
+      done: isObj(s.story) && typeof s.story.done === 'string' ? s.story.done : ''
     });
   });
 
@@ -236,6 +238,7 @@
       // A round = one pass through all the stations. "מתחילים מחדש עם שאלות חדשות" starts the next one.
       round: 1,
       roundRight: {}, // ids answered right in this round (the cure % counts them)
+      briefed: {}, // stations whose story opening was shown in this round
       cases: CFG.startCases,
       casesToday: { date: todayKey(), delta: 0 },
       daysPlayed: [],
@@ -280,6 +283,9 @@
       Object.keys(saved.roundRight).forEach((id) => { if (saved.roundRight[id] === true) s.roundRight[id] = true; });
     } else if (s.round === 1) {
       s.roundRight = Object.assign({}, s.mastered); // saved before rounds existed: this is still round 1
+    }
+    if (isObj(saved.briefed)) {
+      Object.keys(saved.briefed).forEach((id) => { if (saved.briefed[id] === true) s.briefed[id] = true; });
     }
     s.cases = count(saved.cases, s.cases);
     if (isObj(saved.casesToday) && typeof saved.casesToday.date === 'string' && Number.isFinite(saved.casesToday.delta)) {
@@ -1110,6 +1116,7 @@
     state.round += 1;
     state.stationsCleared = {};
     state.roundRight = {};
+    state.briefed = {};
     state.victoryShown = false;
     state.cases = CFG.startCases;
     state.casesToday = { date: todayKey(), delta: 0 };
@@ -1199,12 +1206,36 @@
    * Station run and review mode
    * ================================================================ */
 
-  function startStation(id) {
+  function startStation(id, skipBriefing) {
     const st = STATIONS.find((s) => s.id === id);
     const qs = st ? stationQuestions(id) : [];
     if (!qs.length) return;
+    if (st.intro && !state.briefed[id] && !skipBriefing) {
+      renderBriefing(st);
+      return;
+    }
     run = { mode: 'station', station: st, questions: runQuestions(qs), index: 0, lives: CFG.livesPerRun, results: [] };
     showQuestion();
+  }
+
+  // The station's part of the story, before its first run in a round.
+  function renderBriefing(st) {
+    run = null;
+    const n = STATIONS.indexOf(st) + 1;
+    show('briefing', `<div class="screen screen--briefing">
+        ${topbar(`תחנה ${n} מתוך ${STATIONS.length}`, st.name, 'close', 'חזרה לתחנות', '')}
+        <section class="briefing">
+          <span class="briefing-icon">${icon(st.icon, 30, 2)}</span>
+          <span class="briefing-label">המשימה בתחנה ${n}</span>
+          <h1 class="briefing-title">${esc(st.name)}</h1>
+          <p class="briefing-story">${fmt(st.intro)}</p>
+          <p class="briefing-topic">מתרגלים כאן: ${esc(st.topic)}${st.topicCode ? ` <code dir="ltr">${esc(st.topicCode)}</code>` : ''}</p>
+        </section>
+        <div class="actions">
+          <button type="button" class="btn btn--primary btn--big" data-action="briefing-go" data-id="${esc(st.id)}">יוצאים לדרך${icon('arrowFwd', 20, 2.4)}</button>
+        </div>
+      </div>`);
+    announce(`${st.name}. ${st.intro.replace(/`/g, '')}`);
   }
 
   // A station run: per level (easy → hard) up to questionsPerRun questions, in random order, but questions
@@ -1462,6 +1493,7 @@
             <div><span class="hs-num" dir="ltr">${right}/${run.results.length}</span><span class="hs-label">תשובות נכונות</span></div>
             <div>${lives(run.lives, CFG.livesPerRun, true)}<span class="hs-label">${samplesLeftText(run.lives)}</span></div>
           </div>
+          ${run.station.done ? `<p class="hero-story">${fmt(run.station.done)}</p>` : ''}
           ${next ? `<p class="hero-caption">${run.lockedBefore[STATIONS.indexOf(next)] ? 'נפתחה תחנה חדשה' : 'התחנה הבאה'}: <b>${esc(next.name)}</b></p>` : ''}
         </section>
         ${resultList(run.results, 'הניסויים בתחנה')}
@@ -1804,7 +1836,8 @@
   function openAbout() {
     openSheet({
       title: 'איך משחקים?',
-      body: `<ul class="bullets" role="list">
+      body: `${typeof RAW.story === 'string' && RAW.story ? `<p class="about-story">${fmt(RAW.story)}</p>` : ''}
+        <ul class="bullets" role="list">
           <li>כל ניסוי במעבדה הוא שאלה בסגנון המבחן: קוד R קצר, ואתם בוחרים מה יהיה הפלט.</li>
           <li>תשובה נכונה מקדמת את התרופה ומאטה את ההתפשטות. טעות עולה בדגימה, ובכל תחנה יש ${CFG.livesPerRun} דגימות.</li>
           <li>אחרי כל תשובה יש הסבר צעד אחר צעד, ואפשר לנסות את הקוד ב-R.</li>
@@ -2053,6 +2086,11 @@
 
   const ACTIONS = {
     station: (el) => startStation(el.dataset.id),
+    'briefing-go': (el) => {
+      state.briefed[el.dataset.id] = true;
+      save();
+      startStation(el.dataset.id, true);
+    },
     locked: (el) => toast(el.dataset.message),
     review: () => startReview(),
     exam: () => startExam(),
