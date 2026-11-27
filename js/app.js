@@ -21,11 +21,14 @@
   }
 
   // Question text formatting: `code` → LTR <code>, **bold** → <b>. Everything is escaped first.
+  // A short code chip (`4 < 5`, `x[2]`) never breaks across lines: half of an expression at the end
+  // of one RTL line and the rest at the start of the next is hard to read. Longer ones may wrap.
+  const CHIP_KEEP = 20;
   function fmt(text) {
     return String(text == null ? '' : text)
       .split('`')
       .map((part, i) => (i % 2
-        ? `<code dir="ltr">${esc(part)}</code>`
+        ? `<code dir="ltr"${part.length <= CHIP_KEEP ? ' class="keep"' : ''}>${esc(part)}</code>`
         : esc(part).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')))
       .join('');
   }
@@ -139,10 +142,20 @@
     return [Math.round(Math.min(a, b)), Math.round(Math.max(a, b))];
   }
 
-  // How many questions of each level a station run draws (missing = all of them).
+  // How many questions of each level a station run draws: { 1: easy, 2: medium, 3: hard } or [easy, medium, hard].
+  // 0 = none of that level; a missing or invalid value = 3. A setting that draws nothing at all falls back to 3 each.
   function perLevel(v) {
-    const raw = isObj(v) ? v : {};
-    return { 1: posInt(raw[1], Infinity), 2: posInt(raw[2], Infinity), 3: posInt(raw[3], Infinity) };
+    const raw = Array.isArray(v) ? { 1: v[0], 2: v[1], 3: v[2] } : isObj(v) ? v : {};
+    const one = (x) => {
+      const n = Number(x);
+      return x != null && x !== '' && typeof x !== 'boolean' && Number.isFinite(n) && n >= 0 ? Math.round(n) : 3;
+    };
+    const out = { 1: one(raw[1]), 2: one(raw[2]), 3: one(raw[3]) };
+    if (!out[1] && !out[2] && !out[3]) {
+      console.warn('[outbreak] questionsPerRun draws no questions; using 3 of each level');
+      return { 1: 3, 2: 3, 3: 3 };
+    }
+    return out;
   }
 
   const CFG = {
@@ -248,19 +261,30 @@
       victoryShown: false,
       sound: true,
       timeMode: CFG.timeModeDefault, // "מצב זמן": a countdown on every station question
-      examTimed: CFG.examTimedDefault // "מבחן הדמה על זמן": one clock for the mock exam
+      examTimed: CFG.examTimedDefault, // "מבחן הדמה על זמן": one clock for the mock exam
+      epoch: 0 // when the progress was last reset (0 = never): a reset in another tab wins over older progress
     };
   }
 
-  function loadState() {
+  // The raw saved text, or null (nothing saved, or storage blocked).
+  function readRaw() {
+    try {
+      return localStorage.getItem(STORAGE_KEY);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Saved text → a clean state, or null when there is nothing usable.
+  function parseState(raw) {
     const s = defaultState();
     let saved = null;
     try {
-      saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+      saved = JSON.parse(raw || 'null');
     } catch (e) {
       saved = null;
     }
-    if (!isObj(saved) || saved.version !== 1) return s;
+    if (!isObj(saved) || saved.version !== 1) return null;
 
     // Copy field by field with type checks; unknown question ids are ignored.
     if (isObj(saved.mastered)) {
@@ -301,15 +325,103 @@
     s.sound = saved.sound !== false;
     if (typeof saved.timeMode === 'boolean') s.timeMode = saved.timeMode;
     if (typeof saved.examTimed === 'boolean') s.examTimed = saved.examTimed;
+    s.epoch = Number.isFinite(saved.epoch) && saved.epoch > 0 ? saved.epoch : 0;
     return s;
   }
 
+  /*
+   * Two tabs (or windows) of the game share one save. Each tab remembers the save as it last read or
+   * wrote it (`synced`), so when the other tab saved in between, the two can be merged without losing
+   * progress from either: a three-way merge of "what I changed since then" onto "what is saved now".
+   */
+  let synced = null; // { raw, state }: the save as this tab last read or wrote it
+
+  const sameRoundAs = (a, round) => (a && a.round === round ? a : null);
+
+  function mergeStates(base, mine, theirs) {
+    // A reset (or a save from before resets were stamped) starts a new epoch: the newer epoch wins whole.
+    if (mine.epoch !== theirs.epoch) return mine.epoch > theirs.epoch ? mine : theirs;
+    const m = defaultState();
+    const keys = (...objs) => [...new Set(objs.flatMap((o) => Object.keys(o || {})))];
+    const union = (a, b) => { const out = {}; keys(a, b).forEach((id) => { if (a[id] || b[id]) out[id] = true; }); return out; };
+    // A setting: mine if I changed it since the last sync, else theirs.
+    const pick = (field) => (base && mine[field] !== base[field] ? mine[field] : theirs[field]);
+
+    m.epoch = mine.epoch;
+    m.mastered = union(mine.mastered, theirs.mastered);
+    // Answer counts: theirs plus what I added since the last sync.
+    keys(mine.attempts, theirs.attempts).forEach((id) => {
+      const a = mine.attempts[id] || { right: 0, wrong: 0 };
+      const t = theirs.attempts[id] || { right: 0, wrong: 0 };
+      const b = (base && base.attempts[id]) || { right: 0, wrong: 0 };
+      m.attempts[id] = { right: t.right + Math.max(0, a.right - b.right), wrong: t.wrong + Math.max(0, a.wrong - b.wrong) };
+    });
+    // Mistakes: their list, minus the ones I fixed, plus the ones I added (since the last sync). A mistake
+    // fixed in the other tab stays fixed: I only add back an id that was not in my last sync.
+    const baseMistakes = base ? base.mistakes : [];
+    const fixedByMe = baseMistakes.filter((id) => !mine.mistakes.includes(id));
+    const addedByMe = mine.mistakes.filter((id) => !baseMistakes.includes(id));
+    m.mistakes = theirs.mistakes.filter((id) => !fixedByMe.includes(id));
+    addedByMe.forEach((id) => { if (!m.mistakes.includes(id)) m.mistakes.push(id); });
+
+    // The round: the newer one wins, and the older round's progress (stations, cure, story, cases) is dropped.
+    m.round = Math.max(mine.round, theirs.round);
+    const mineR = sameRoundAs(mine, m.round);
+    const theirsR = sameRoundAs(theirs, m.round);
+    const baseR = sameRoundAs(base, m.round);
+    const one = mineR && theirsR ? null : mineR || theirsR;
+    if (one) {
+      ['stationsCleared', 'roundRight', 'briefed', 'victoryShown', 'cases', 'casesToday'].forEach((f) => { m[f] = one[f]; });
+    } else {
+      m.stationsCleared = union(mine.stationsCleared, theirs.stationsCleared);
+      m.roundRight = union(mine.roundRight, theirs.roundRight);
+      m.briefed = union(mine.briefed, theirs.briefed);
+      m.victoryShown = mine.victoryShown || theirs.victoryShown;
+      // Cases go up and down: theirs plus my change since the last sync (or since this round started).
+      m.cases = Math.max(0, theirs.cases + mine.cases - (baseR ? baseR.cases : CFG.startCases));
+      if (mine.casesToday.date === theirs.casesToday.date) {
+        const b = baseR && baseR.casesToday.date === mine.casesToday.date ? baseR.casesToday.delta : 0;
+        m.casesToday = { date: theirs.casesToday.date, delta: theirs.casesToday.delta + mine.casesToday.delta - b };
+      } else {
+        m.casesToday = mine.casesToday.date > theirs.casesToday.date ? mine.casesToday : theirs.casesToday;
+      }
+    }
+    m.daysPlayed = [...new Set(theirs.daysPlayed.concat(mine.daysPlayed))].sort();
+    m.streak = pick('streak');
+    m.bestStreak = Math.max(mine.bestStreak, theirs.bestStreak, m.streak);
+    m.examBest = mine.examBest == null ? theirs.examBest : theirs.examBest == null ? mine.examBest : Math.max(mine.examBest, theirs.examBest);
+    m.sound = pick('sound');
+    m.timeMode = pick('timeMode');
+    m.examTimed = pick('examTimed');
+    return m;
+  }
+
+  const copyState = (s) => JSON.parse(JSON.stringify(s));
+
+  // Brings in what another tab saved since this tab's last sync. Returns true when the state changed.
+  function pullSaved() {
+    const raw = readRaw();
+    if (raw == null || (synced && raw === synced.raw)) return false;
+    const theirs = parseState(raw);
+    if (!theirs) return false;
+    const before = JSON.stringify(state);
+    // Copies all round: the merge may hand back (parts of) `theirs`, and the base must never share
+    // objects with the live state, or this tab's later changes would vanish from the next merge.
+    state = copyState(mergeStates(synced && synced.state, state, theirs));
+    synced = { raw, state: copyState(theirs) };
+    return JSON.stringify(state) !== before;
+  }
+
   function save() {
+    pullSaved();
+    const raw = JSON.stringify(state);
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(STORAGE_KEY, raw);
     } catch (e) {
       // Storage unavailable (private mode, blocked): keep playing without saving.
+      return;
     }
+    synced = { raw, state: copyState(state) };
   }
 
   // Count today as a played day and start a new "today" counter for the cases.
@@ -319,9 +431,23 @@
     if (state.casesToday.date !== today) state.casesToday = { date: today, delta: 0 };
   }
 
-  let state = loadState();
+  const startRaw = readRaw();
+  let state = parseState(startRaw) || defaultState();
+  if (startRaw != null) synced = { raw: startRaw, state: copyState(state) };
   touchToday();
   save();
+
+  // Another tab saved: merge it in, and refresh the home screen (other screens read the state when they render).
+  window.addEventListener('storage', (e) => {
+    if (e.key !== STORAGE_KEY || e.newValue == null) return; // a removal is followed by the new save
+    if (!pullSaved()) return;
+    touchToday();
+    if (screen === 'home' && !sheet) {
+      const y = window.scrollY;
+      renderHome(false);
+      window.scrollTo(0, y);
+    }
+  });
 
   /* ================================================================
    * Derived progress
@@ -501,7 +627,7 @@
   let sheetShownAt = -Infinity; // a sheet opened, or its content changed in place
 
   function show(name, html, focus) {
-    if (sheet) closeSheet();
+    if (sheet) closeSheet(true); // the new screen takes focus
     toastEl.classList.remove('is-on');
     document.querySelectorAll('.confetti').forEach((c) => c.remove());
     screen = name;
@@ -510,6 +636,7 @@
     screenShownAt = performance.now();
     window.scrollTo(0, 0);
     if (name !== 'home') guardHistory();
+    else releaseHistory();
     if (focus !== false) {
       const h = app.querySelector('h1');
       if (h) {
@@ -535,8 +662,14 @@
   // Back button: we keep one extra history entry while away from home (or while a sheet is open),
   // so Android's back gesture lands back here instead of leaving the game.
   let guarded = false;
+  let skipPop = false; // our own history.back() from releaseHistory() has not landed yet
+  let guardAfterPop = false; // a guard was asked for meanwhile: push it once that step back has landed
   function guardHistory() {
     if (guarded) return;
+    if (skipPop) {
+      guardAfterPop = true; // pushing now would be undone by the pending step back
+      return;
+    }
     try {
       history.pushState({ outbreak: true }, '');
       guarded = true;
@@ -545,7 +678,29 @@
     }
   }
 
+  // Back on home with no sheet open, the extra entry is no longer needed: step back over it ourselves,
+  // so the next Android back leaves the game at once instead of doing nothing.
+  function releaseHistory() {
+    guardAfterPop = false;
+    if (!guarded || sheet || screen !== 'home') return;
+    guarded = false;
+    skipPop = true;
+    try {
+      history.back();
+    } catch (e) {
+      skipPop = false;
+    }
+  }
+
   window.addEventListener('popstate', () => {
+    if (skipPop) {
+      skipPop = false; // our own step back from releaseHistory()
+      if (guardAfterPop) {
+        guardAfterPop = false;
+        guardHistory();
+      }
+      return;
+    }
     guarded = false;
     if (sheet) {
       closeSheet();
@@ -663,8 +818,21 @@
     return html + esc(code.slice(last));
   }
 
+  // Code as text: one block per line. A line too wide for a phone wraps inside its box with a hanging
+  // indent (the rest of it starts further in than the line itself, like R's own continuation lines), so
+  // students see all of the code without having to find a sideways swipe, and the real line breaks stay
+  // clear. The text (and a copy of it) is still exactly the code: each block ends with its own "\n".
+  // rows: [{ text, html, lead }] (lead: characters in front of the line, such as a console prompt).
+  function lineBlocks(rows) {
+    return rows.map((r, i) => {
+      const hang = (r.lead || 0) + r.text.length - r.text.trimStart().length + 4;
+      return `<span class="ln" style="--hang:${hang}ch">${r.html}${i < rows.length - 1 ? '\n' : ''}</span>`;
+    }).join('');
+  }
+  const codeRows = (code) => code.split('\n').map((line) => ({ text: line, html: highlight(line) }));
+
   function codeBlock(code) {
-    return `<pre class="code" dir="ltr" tabindex="0" aria-label="קוד R"><code>${highlight(code)}</code></pre>`;
+    return `<pre class="code" dir="ltr" tabindex="0" aria-label="קוד R"><code>${lineBlocks(codeRows(code))}</code></pre>`;
   }
 
   // The start of the code's last top-level statement (a block like `if (...) {` gets " …").
@@ -775,8 +943,12 @@
     return `<div class="tbl-wrap${dark ? ' tbl-wrap--dark' : ''}" dir="ltr" tabindex="0"><table class="tbl"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
   }
 
+  // What R printed. A printout of several lines (a table, a list) gets one block per line, like the code.
   function consoleChip(output) {
-    return `<code class="console-chip${isErrorOutput(output) ? ' is-err' : ''}" dir="ltr">${esc(output)}</code>`;
+    const body = output.includes('\n')
+      ? lineBlocks(output.split('\n').map((l) => ({ text: l, html: esc(l) })))
+      : esc(output);
+    return `<code class="console-chip${isErrorOutput(output) ? ' is-err' : ''}" dir="ltr">${body}</code>`;
   }
 
   function stepVisual(step, dark) {
@@ -1345,9 +1517,15 @@
     return `<button type="button" class="btn btn--primary btn--grow" data-action="next">${label}${icon('arrowFwd', 20, 2.4)}</button>`;
   }
 
-  function consoleLines(code) {
+  // The code as typed into the R console ("> " and "+ " prompts), then what R printed.
+  function consoleLines(code, output) {
     const prompts = consolePrompts(code);
-    return code.split('\n').map((l, i) => `<span class="rc-prompt">${esc(prompts[i])}</span> ${highlight(l)}`).join('\n');
+    const rows = code.split('\n').map((l, i) => ({ text: l, lead: 2, html: `<span class="rc-prompt">${esc(prompts[i])}</span> ${highlight(l)}` }));
+    if (output) {
+      const cls = `rc-out${isErrorOutput(output) ? ' is-err' : ''}`;
+      output.split('\n').forEach((l) => rows.push({ text: l, html: `<span class="${cls}">${esc(l)}</span>` }));
+    }
+    return lineBlocks(rows);
   }
 
   function renderSuccess() {
@@ -1359,10 +1537,9 @@
     const caption = !output
       ? `<p class="hero-caption">התשובה הנכונה: <span class="hero-answer">${answerInline(right)}</span></p>`
       : `<p class="hero-caption">${isErrorOutput(output) ? 'ולכן R עוצר עם שגיאה:' : 'ולכן הפלט הוא'} ${consoleChip(output)}</p>`;
-    const consoleOut = output ? `\n<span class="rc-out${isErrorOutput(output) ? ' is-err' : ''}">${esc(output)}</span>` : '';
     const heroVisual = heroIndex >= 0
       ? `<div class="hero-visual">${stepVisual(q.explanation[heroIndex], true)}</div>${caption}`
-      : `<pre class="rconsole" dir="ltr" aria-label="קונסולת R">${consoleLines(q.code)}${consoleOut}</pre>${output ? '' : caption}`;
+      : `<pre class="rconsole" dir="ltr" aria-label="קונסולת R">${consoleLines(q.code, output)}</pre>${output ? '' : caption}`;
 
     const gained = f.cureAfter - f.cureBefore;
     const slowed = -f.cases;
@@ -1466,21 +1643,31 @@
     }
   }
 
+  // The next station still to do in this round: the first open one after this one, else the first open
+  // one before it. null when every station is cleared (or the rest are locked).
   function nextStationAfter(id) {
     const from = STATIONS.findIndex((s) => s.id === id);
-    for (let i = from + 1; i < STATIONS.length; i++) {
-      if (stationStatus(i) === 'open' || stationStatus(i) === 'cleared') return STATIONS[i];
-    }
-    return null;
+    const order = STATIONS.map((s, i) => i).filter((i) => i > from).concat(STATIONS.map((s, i) => i).filter((i) => i < from));
+    const i = order.find((j) => stationStatus(j) === 'open');
+    return i == null ? null : STATIONS[i];
   }
 
   function renderStationSummary() {
     const right = run.results.filter((r) => r.right).length;
     const next = nextStationAfter(run.station.id);
-    const primary = next
-      ? `<button type="button" class="btn btn--primary btn--grow" data-action="station" data-id="${esc(next.id)}">לתחנה הבאה${icon('arrowFwd', 20, 2.4)}</button>`
-      : examUnlocked()
-        ? `<button type="button" class="btn btn--primary btn--grow" data-action="exam">למבחן הדמה${icon('arrowFwd', 20, 2.4)}</button>`
+    // This clear finished the cure: lead to the victory (goHome shows it once).
+    const cured = allCleared() && !state.victoryShown;
+    const primary = cured
+      ? `<button type="button" class="btn btn--primary btn--grow" data-action="home">לתרופה${icon('arrowFwd', 20, 2.4)}</button>`
+      : next
+        ? `<button type="button" class="btn btn--primary btn--grow" data-action="station" data-id="${esc(next.id)}">לתחנה הבאה${icon('arrowFwd', 20, 2.4)}</button>`
+        : examUnlocked()
+          ? `<button type="button" class="btn btn--primary btn--grow" data-action="exam">למבחן הדמה${icon('arrowFwd', 20, 2.4)}</button>`
+          : '';
+    const caption = cured
+      ? '<p class="hero-caption">כל התחנות הושלמו: <b>התרופה מוכנה!</b></p>'
+      : next
+        ? `<p class="hero-caption">${run.lockedBefore[STATIONS.indexOf(next)] ? 'נפתחה תחנה חדשה' : 'התחנה הבאה'}: <b>${esc(next.name)}</b></p>`
         : '';
     show('summary', `<div class="screen screen--summary">
         ${topbar(run.station.name, 'סיכום התחנה', 'close', 'חזרה לתחנות', '')}
@@ -1494,11 +1681,11 @@
             <div>${lives(run.lives, CFG.livesPerRun, true)}<span class="hs-label">${samplesLeftText(run.lives)}</span></div>
           </div>
           ${run.station.done ? `<p class="hero-story">${fmt(run.station.done)}</p>` : ''}
-          ${next ? `<p class="hero-caption">${run.lockedBefore[STATIONS.indexOf(next)] ? 'נפתחה תחנה חדשה' : 'התחנה הבאה'}: <b>${esc(next.name)}</b></p>` : ''}
+          ${caption}
         </section>
         ${resultList(run.results, 'הניסויים בתחנה')}
         <div class="actions actions--row">
-          <button type="button" class="btn btn--ghost${primary ? '' : ' btn--grow'}" data-action="home">לתחנות</button>
+          ${cured ? '' : `<button type="button" class="btn btn--ghost${primary ? '' : ' btn--grow'}" data-action="home">לתחנות</button>`}
           ${primary}
         </div>
       </div>`);
@@ -1517,7 +1704,9 @@
             <div class="hero-titles">
               <span class="hero-label hero-label--hazard">${esc(run.station.name)}</span>
               <h1 class="hero-title">כל הדגימות התקלקלו</h1>
-              <span class="hero-sub">התחנה עוד לא הושלמה. קראו את ההסברים ונסו שוב.</span>
+              <span class="hero-sub">${state.stationsCleared[run.station.id]
+                ? 'התחנה כבר הושלמה, וההתקדמות שלכם נשמרה. קראו את ההסברים ונסו שוב לתרגול.'
+                : 'התחנה עוד לא הושלמה. קראו את ההסברים ונסו שוב.'}</span>
             </div>
           </div>
           <div class="hero-stats hero-stats--fail">
@@ -1670,7 +1859,13 @@
   function renderExamResult() {
     const e = run.exam;
     const total = run.results.length;
-    const newBest = e.prevBest == null || e.score > e.prevBest;
+    // A trophy only for a real score: a first exam above 0%, or one that beats the earlier best.
+    const newBest = e.score > 0 && (e.prevBest == null || e.score > e.prevBest);
+    const bestChip = newBest
+      ? `<span class="best-chip is-new">${icon('trophy', 16)}שיא חדש!</span>`
+      : e.prevBest == null
+        ? '' // a first exam at 0%: no record to show
+        : `<span class="best-chip">השיא שלכם: <bdi dir="ltr">${state.examBest}%</bdi></span>`;
     show('summary', `<div class="screen screen--summary">
         ${topbar('מכינים את התרופה', 'תוצאות המבחן', 'close', 'חזרה למעבדה', '')}
         <section class="hero hero--exam">
@@ -1678,7 +1873,7 @@
           <h1 class="sr-only">תוצאות המבחן: ${e.score}%</h1>
           <span class="score" dir="ltr" aria-hidden="true">${e.score}%</span>
           <span class="score-sub">${e.right} מתוך ${total} נכונות</span>
-          <span class="best-chip${newBest ? ' is-new' : ''}">${newBest ? `${icon('trophy', 16)}שיא חדש!` : `השיא שלכם: <bdi dir="ltr">${state.examBest}%</bdi>`}</span>
+          ${bestChip}
         </section>
         ${resultList(run.results, 'כל השאלות')}
         <div class="actions actions--row">
@@ -1721,7 +1916,7 @@
    * Sheets (bottom dialogs)
    * ================================================================ */
 
-  let sheet = null; // { el, onClose, returnFocus }
+  let sheet = null; // { el, onClose, returnFocus, explainIndex (an explanation sheet: its result's index) }
 
   function openSheet(opts) {
     const returnFocus = sheet ? sheet.returnFocus : document.activeElement;
@@ -1740,7 +1935,7 @@
     sheetRoot.appendChild(el);
     sheetShownAt = performance.now();
     app.inert = true;
-    sheet = { el, onClose: opts.onClose, returnFocus };
+    sheet = { el, onClose: opts.onClose, returnFocus, explainIndex: opts.explainIndex };
     guardHistory();
     const first = el.querySelector(opts.focus || '#sheet-title');
     if (first) first.focus({ preventScroll: true });
@@ -1756,6 +1951,7 @@
     app.inert = false;
     if (s.onClose) s.onClose();
     if (!replacing && s.returnFocus && document.contains(s.returnFocus)) s.returnFocus.focus({ preventScroll: true });
+    if (!replacing) releaseHistory();
   }
 
   // Keep keyboard focus inside the open sheet; Escape closes it.
@@ -1820,6 +2016,7 @@
     openSheet({
       title: `${run.mode === 'exam' ? 'שאלה' : 'ניסוי'} ${pad2(index + 1)}`,
       wide: true,
+      explainIndex: index,
       body: `<p class="explain-prompt">${fmt(q.prompt)}</p>
         ${q.context ? `<p class="qcontext">${fmt(q.context)}</p>` : ''}
         ${codeBlock(q.code)}
@@ -1841,7 +2038,9 @@
           <li>כל ניסוי במעבדה הוא שאלה בסגנון המבחן: קוד R קצר, ואתם בוחרים מה יהיה הפלט.</li>
           <li>תשובה נכונה מקדמת את התרופה ומאטה את ההתפשטות. טעות עולה בדגימה, ובכל תחנה יש ${CFG.livesPerRun} דגימות.</li>
           <li>אחרי כל תשובה יש הסבר צעד אחר צעד, ואפשר לנסות את הקוד ב-R.</li>
-          <li>כל התחנות פתוחות: מתרגלים מה שרוצים, באיזה סדר שרוצים. השאלות שטעיתם בהן מחכות ב"ניקוי דגימות".</li>
+          <li>${CFG.lockStations
+            ? `התחנות נפתחות אחת אחרי השנייה: כל תחנה נפתחת כשמסיימים את זו שלפניה${examUnlocked() ? '' : ', ומבחן הדמה נפתח אחרי כולן'}.`
+            : 'כל התחנות פתוחות: מתרגלים מה שרוצים, באיזה סדר שרוצים.'} השאלות שטעיתם בהן מחכות ב"ניקוי דגימות".</li>
           <li>מבחן הדמה כולל שאלות מכל התחנות, והוא על זמן כמו המבחן האמיתי (אפשר לכבות את השעון כאן למטה).</li>
           <li>כשכל התחנות הושלמו, התרופה מוכנה. אחר כך אפשר להתחיל מחדש עם שאלות חדשות: בכל תחנה יש הרבה יותר שאלות ממה שמופיע בסבב אחד.</li>
           <li>רוצים שעון גם בתחנות? הפעילו את "מצב זמן בתחנות": לכל שאלה יש שעון, ושאלה שהזמן שלה נגמר נחשבת טעות.</li>
@@ -1858,12 +2057,24 @@
           <span class="setting-text"><span class="setting-name">צלילים</span><span class="setting-sub">צפצופים קטנים בתשובות</span></span>
           <button type="button" class="switch" role="switch" aria-checked="${state.sound}" aria-label="צלילים" data-action="sound"><span class="switch-knob"></span></button>
         </div>
-        <div class="setting setting--reset" id="reset-area">
-          <span class="setting-text"><span class="setting-name">איפוס ההתקדמות</span><span class="setting-sub">מוחק את כל מה ששמרנו במכשיר הזה</span></span>
-          <button type="button" class="btn btn--danger btn--small" data-action="reset-ask">איפוס</button>
-        </div>
+        <div class="setting setting--reset" id="reset-area">${resetAreaHTML()}</div>
         <p class="credit">השאלות מבוססות על חומר התרגולים של שבועות <bdi dir="ltr">1–7</bdi>.</p>`
     });
+  }
+
+  function resetAreaHTML() {
+    return `<span class="setting-text"><span class="setting-name">איפוס ההתקדמות</span><span class="setting-sub">מוחק את כל מה ששמרנו במכשיר הזה</span></span>
+          <button type="button" class="btn btn--danger btn--small" data-action="reset-ask">איפוס</button>`;
+  }
+
+  // "ביטול": the reset area goes back to its button in place, so the sheet keeps its scroll and focus.
+  function cancelReset() {
+    const area = document.getElementById('reset-area');
+    if (!area) return;
+    area.classList.remove('is-confirming');
+    sheetShownAt = performance.now(); // "איפוס" appears where "ביטול" was
+    area.innerHTML = resetAreaHTML();
+    area.querySelector('[data-action="reset-ask"]').focus({ preventScroll: true });
   }
 
   function askReset() {
@@ -1889,6 +2100,7 @@
     if (run && run.timer) run.timer.stop();
     run = null;
     state = defaultState();
+    state.epoch = Date.now(); // wins over the older progress another open tab may still hold
     state.sound = sound;
     state.timeMode = timeMode;
     state.examTimed = examTimed;
@@ -1965,11 +2177,24 @@
     return webRPromise;
   }
 
-  function openTryR(q) {
+  // `back`: opened from an explanation sheet ({ index, top }): closing "נסו ב-R" goes back to that
+  // explanation, scrolled where it was.
+  function openTryR(q, back) {
     const rows = clamp(q.code.split('\n').length + 1, 4, 12);
+    const from = run;
     openSheet({
       title: 'נסו ב-R',
       wide: true,
+      // After closeSheet has returned focus; skipped if another sheet replaced this one or the screen changed.
+      onClose: back ? () => window.setTimeout(() => {
+        if (sheet || run !== from || !from || screen !== 'summary') return;
+        openExplain(back.index);
+        const box = sheet && sheet.el.querySelector('.sheet');
+        if (box) box.scrollTop = back.top;
+        // Keyboard and screen-reader users land back on the button they used.
+        const tryBtn = box && box.querySelector('[data-action="try-r"]');
+        if (tryBtn) tryBtn.focus({ preventScroll: true });
+      }) : undefined,
       body: `<p class="sheet-text">אפשר לשנות את הקוד ולהריץ שוב. מה R מדפיס?</p>
         <label class="sr-only" for="r-code">קוד R</label>
         <textarea id="r-code" class="r-code" dir="ltr" rows="${rows}" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off">${esc(q.code)}</textarea>
@@ -1991,6 +2216,12 @@
 
   const focusLost = () => !document.activeElement || document.activeElement === document.body;
 
+  // R's status and output appear under the code and buttons: on a short screen (landscape, 320px)
+  // that is below the sheet's fold, so scroll the sheet to show them.
+  function reveal(el) {
+    if (el && el.isConnected) el.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
+  }
+
   async function runR() {
     // Everything is tied to this sheet: if it closes while R loads, a later sheet is left alone.
     const box = sheet && sheet.el;
@@ -2001,6 +2232,7 @@
     const code = codeEl.value;
     btn.disabled = true;
     setRStatus('<span class="spinner" aria-hidden="true"></span>טוענים את R… (בפעם הראשונה זה לוקח כמה שניות)', 'loading', box);
+    reveal(box.querySelector('#r-status'));
 
     let webR;
     try {
@@ -2014,7 +2246,8 @@
       if (copy) copy.classList.replace('btn--ghost', 'btn--primary');
       btn.classList.replace('btn--primary', 'btn--ghost');
       // Disabling the focused button dropped focus to <body>: put it on the next step.
-      if (copy && focusLost()) copy.focus();
+      if (copy && focusLost()) copy.focus({ preventScroll: true });
+      reveal(box.querySelector('#r-status'));
       return;
     }
 
@@ -2031,12 +2264,13 @@
     }
     if (!box.isConnected) return; // the sheet was closed meanwhile
     btn.disabled = false;
-    if (focusLost()) btn.focus();
+    if (focusLost()) btn.focus({ preventScroll: true });
     setRStatus('', '', box);
     out.hidden = false;
     out.innerHTML = lines.length
-      ? lines.map((l) => `<span class="${l.type === 'stderr' ? 'r-err' : ''}">${esc(l.data)}</span>`).join('\n')
+      ? lineBlocks(lines.flatMap((l) => String(l.data).split('\n').map((t) => ({ text: t, html: `<span class="${l.type === 'stderr' ? 'r-err' : ''}">${esc(t)}</span>` }))))
       : '<span class="r-dim"># אין פלט</span>';
+    reveal(out);
     announce('הקוד רץ. הפלט מוצג למטה.');
   }
 
@@ -2077,6 +2311,7 @@
       codeEl.focus();
       codeEl.select();
       setRStatus('לא הצלחנו להעתיק אוטומטית. הקוד מסומן: העתיקו אותו ידנית.', 'error');
+      reveal(document.getElementById('r-status'));
     }
   }
 
@@ -2111,7 +2346,10 @@
     explain: (el) => openExplain(Number(el.dataset.index)),
     'try-r': (el) => {
       const q = el.dataset.qid ? Q_BY_ID.get(el.dataset.qid) : run && run.feedback && run.feedback.q;
-      if (q) openTryR(q);
+      const back = sheet && sheet.explainIndex != null
+        ? { index: sheet.explainIndex, top: sheet.el.querySelector('.sheet').scrollTop }
+        : null;
+      if (q) openTryR(q, back);
     },
     'r-run': () => runR(),
     'r-copy': (el) => copyCode(el),
@@ -2123,7 +2361,7 @@
     'new-round-ask': () => askNewRound(),
     'new-round': () => newRound(),
     'reset-ask': () => askReset(),
-    'reset-cancel': () => openAbout(),
+    'reset-cancel': () => cancelReset(),
     'reset-confirm': () => resetProgress()
   };
 

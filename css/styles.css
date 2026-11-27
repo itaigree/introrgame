@@ -241,6 +241,8 @@ code[dir="ltr"] {
   unicode-bidi: isolate;
   overflow-wrap: anywhere;
 }
+/* A short chip (`4 < 5`) stays on one line; a long one may still wrap (see fmt() in app.js). */
+code[dir="ltr"].keep { white-space: nowrap; }
 b { font-weight: 700; }
 
 /* ---------- Home ---------- */
@@ -455,7 +457,9 @@ b { font-weight: 700; }
 
 .topbar {
   display: grid;
-  grid-template-columns: minmax(44px, 1fr) auto minmax(44px, 1fr);
+  /* The title column gets its natural width only while it fits: a long title wraps instead of
+     spilling over the close button (or the samples / "הגשה" at the other end). */
+  grid-template-columns: minmax(min-content, 1fr) minmax(0, auto) minmax(min-content, 1fr);
   align-items: center;
   gap: 8px;
 }
@@ -463,9 +467,11 @@ b { font-weight: 700; }
 .topbar-end { justify-self: end; display: flex; }
 .topbar-title { display: flex; flex-direction: column; align-items: center; gap: 2px; text-align: center; min-width: 0; }
 .kicker { font-size: 13px; font-weight: 700; color: var(--primary); }
-.topbar-main { font-weight: 700; font-size: 19px; line-height: 1.1; white-space: nowrap; }
+.topbar-main { font-weight: 700; font-size: 19px; line-height: 1.1; max-width: 100%; overflow-wrap: break-word; text-wrap: balance; }
 
 .lives { display: flex; gap: 4px; }
+.topbar .lives { max-width: 34vw; overflow: hidden; } /* a config with many samples must not squeeze the title away */
+.hero .lives { flex-wrap: wrap; }
 .tube { stroke: var(--ink); }
 .tube .tube-glass { fill: #FFFFFF; }
 .tube .tube-fill { fill: #7C5CE6; stroke: none; }
@@ -566,13 +572,23 @@ b { font-weight: 700; }
   border-radius: 10px;
   padding: 12px;
   font-size: 13px;
-  line-height: 1.8;
-  white-space: pre;
+  line-height: 1.6;
+  white-space: pre-wrap; /* a long line wraps (see .ln): students never have to swipe sideways to see code */
+  overflow-wrap: break-word;
   text-align: left;
-  overflow-x: auto;
+  overflow-x: auto; /* only a safety net: nothing should need it */
   -webkit-overflow-scrolling: touch;
 }
 .code code { font-family: inherit; }
+/* One code line (lineBlocks() in app.js). When it wraps, the rest of it hangs further in than the line's
+   own indentation (--hang), like R's continuation lines, so wrapped text never looks like a new line. */
+.ln {
+  display: block;
+  padding-left: var(--hang, 4ch);
+  text-indent: calc(-1 * var(--hang, 4ch));
+}
+/* A little more space between two real lines than inside one wrapped line. */
+.ln + .ln { margin-top: 0.3em; }
 .tk-fn { color: #7CC7FF; }
 .tk-num { color: #FFC870; }
 .tk-str { color: #A5E887; }
@@ -708,15 +724,16 @@ b { font-weight: 700; }
   border-radius: 12px;
   padding: 12px;
   font-size: 13px;
-  line-height: 1.7;
+  line-height: 1.5;
   color: #E1E8F0;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
   overflow-x: auto;
   text-align: left;
 }
 .rc-prompt { color: #7D8B99; }
 .rc-out { color: var(--green); font-weight: 700; }
-.rc-out.is-err { color: var(--danger-on-dark); white-space: pre-wrap; overflow-wrap: anywhere; }
+.rc-out.is-err { color: var(--danger-on-dark); }
 
 .hero--fail { padding: 0; gap: 0; overflow: hidden; }
 .hazard { height: 10px; background: repeating-linear-gradient(45deg, var(--hazard) 0 10px, var(--panel) 10px 20px); }
@@ -939,28 +956,28 @@ b { font-weight: 700; }
 .tbl-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); }
 .tbl { border-collapse: collapse; font-family: var(--mono); font-size: 13px; min-width: 100%; text-align: left; }
 .tbl th,
-.tbl td { padding: 6px 10px; white-space: nowrap; }
+.tbl td { padding: 6px 10px; }
+/* A cell (often a bit of code, like `prices > 100` or a line of a loop) may wrap at its spaces, so no column
+   hides off the side. The table layout keeps every cell on one line whenever the table fits. */
+.tbl thead th { vertical-align: bottom; min-width: 3ch; }
+.tbl td { min-width: 3ch; }
 .tbl thead th { font-weight: 700; color: var(--muted); border-bottom: 1px solid var(--border); background: #F8F9FC; }
 .tbl tbody th { font-weight: 500; color: #6B7685; }
 .tbl tbody tr + tr > * { border-top: 1px solid #EEF1F5; }
 .tbl tr.hl > * { background: var(--tint-2); font-weight: 700; color: var(--primary-dark); }
 .tbl tr.hl > th:first-child { box-shadow: inset 3px 0 0 var(--primary); }
-/* Narrow phones: tighter cells, and column headers (often a bit of code like `prices > 100`) may wrap,
-   so a 4-column trace table fits without sideways scrolling. */
-@media (max-width: 400px) {
+/* Phones: tighter cells, so a 5-6 column trace table fits without sideways scrolling. */
+@media (max-width: 480px) {
   .tbl { font-size: 12px; }
   .tbl th,
   .tbl td { padding: 5px 7px; }
-  .tbl thead th { white-space: normal; vertical-align: bottom; min-width: 3ch; }
-  /* a code line in a trace table may wrap at its spaces rather than hide the columns after it */
-  .tbl td { white-space: normal; min-width: 3ch; }
   /* a table in an explanation step also uses the space under the step number (on the right) */
   .step-body > .tbl-wrap { margin-right: -34px; }
 }
 @media (max-width: 360px) {
   .tbl { font-size: 11px; }
   .tbl th,
-  .tbl td { padding: 5px 5px; }
+  .tbl td { padding: 5px 4px; }
 }
 
 .tbl-wrap--dark { background: transparent; border-color: var(--panel-3); }
@@ -985,7 +1002,7 @@ code.console-chip {
   border-radius: 6px;
   padding: 4px 9px;
   white-space: pre-wrap; /* a long line (an error message) wraps instead of hiding */
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word; /* at a space where it can, inside a token only when it must */
   text-align: left;
   direction: ltr;
 }
@@ -1023,9 +1040,8 @@ code.rr-code {
   font-size: 13.5px;
   font-weight: 700;
   color: var(--ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-wrap; /* the whole line, wrapped if it is long, never cut off */
+  overflow-wrap: break-word;
   text-align: right;
   direction: ltr;
 }
@@ -1244,8 +1260,9 @@ code.rr-code {
   padding: 12px;
   resize: vertical;
   text-align: left;
-  white-space: pre;
-  overflow-x: auto;
+  white-space: pre-wrap; /* long lines wrap on screen only; the code itself is unchanged */
+  overflow-wrap: break-word;
+  overflow-x: hidden;
   caret-color: var(--hazard);
 }
 .r-status { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; line-height: 1.45; color: var(--ink-2); }
@@ -1277,9 +1294,13 @@ code.rr-code {
   padding: 12px;
   font-size: 13.5px;
   line-height: 1.6;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
   overflow-x: auto;
   text-align: left;
+}
+@media (max-height: 500px) {
+  .r-code { max-height: 40vh; } /* landscape: leave room for R's answer under the code */
 }
 .r-err { color: var(--danger-on-dark); }
 .r-dim { color: #6E7E90; }

@@ -14,6 +14,7 @@ window.GAME_CONFIG = {
   livesPerRun: 3,
 
   // How many questions of each level (1 = easy, 2 = medium, 3 = hard) one station run draws.
+  // 0 means none of that level; a level left out draws 3. (If a station has fewer, it draws all it has.)
   // Questions the student hasn't answered right yet come first, so every run is different.
   questionsPerRun: { 1: 3, 2: 3, 3: 3 },
 
